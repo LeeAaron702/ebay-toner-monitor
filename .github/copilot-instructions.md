@@ -147,7 +147,6 @@ Optional:
 
 ```bash
 # Activate virtual environment first (REQUIRED before any Python commands)
-source venv/bin/activate
 ```
 
 This ensures all dependencies are available and the correct Python version is used.
