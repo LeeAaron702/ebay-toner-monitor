@@ -274,6 +274,75 @@ docker exec proco-ebay-notifier cp /app/database.db /app/backups/
 
 ---
 
+## Git Auto-Sync (Multi-Machine)
+
+The project includes automatic git synchronization for running across multiple machines.
+
+### Enable Auto-Sync
+
+Add to your `.env`:
+```bash
+GIT_AUTO_SYNC=true
+MACHINE_ID=production-server  # Unique name for this machine
+GIT_SYNC_BRANCH=main
+GIT_USER_NAME=Toner Monitor Bot
+GIT_USER_EMAIL=bot@toner-monitor.local
+```
+
+### How It Works
+
+The `git-sync` Docker service runs at **6:00 AM** and **6:00 PM**:
+
+1. **Pull** latest changes from GitHub
+2. **Commit** local changes (database updates)
+3. **Push** back to GitHub
+
+### Docker Compose Services
+
+```yaml
+services:
+  # Main application
+  proco-ebay-notifier:
+    # ...
+
+  # Git sync (runs 2x daily)
+  git-sync:
+    build: .
+    container_name: proco-git-sync
+    restart: unless-stopped
+    environment:
+      - GIT_AUTO_SYNC=true
+    volumes:
+      - .:/app
+      - ~/.ssh:/root/.ssh:ro  # SSH keys for git push
+    command: ["python", "scripts/git_sync.py", "--daemon"]
+```
+
+### SSH Key Setup
+
+Each machine needs SSH access to GitHub:
+
+```bash
+# Generate key (if not exists)
+ssh-keygen -t ed25519 -C "your-email@example.com"
+
+# Add public key to GitHub
+cat ~/.ssh/id_ed25519.pub
+# Go to: https://github.com/settings/keys → Add SSH key
+```
+
+### Manual Sync
+
+```bash
+# Run sync manually
+python scripts/git_sync.py
+
+# Or inside Docker
+docker exec proco-git-sync python scripts/git_sync.py
+```
+
+---
+
 ## Scaling Considerations
 
 ### Current Limits

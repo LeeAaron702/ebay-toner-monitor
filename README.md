@@ -262,7 +262,7 @@ Each brand engine follows the same processing flow:
 ### 1. Clone & Configure
 
 ```bash
-git clone https://github.com/yourusername/ebay-toner-monitor.git
+git clone git@github.com:LeeAaron702/ebay-toner-monitor.git
 cd ebay-toner-monitor
 
 # Copy example environment file
@@ -477,7 +477,19 @@ pytest tests/ -v
 
 ## 🔄 Multi-Machine Sync
 
-This project supports deployment across multiple machines with automatic git synchronization:
+This project supports deployment across multiple machines with automatic git synchronization.
+
+### Setup
+
+1. Add to your `.env`:
+```bash
+GIT_AUTO_SYNC=true
+MACHINE_ID=your-machine-name
+```
+
+2. The `git-sync` Docker service runs automatically at **6:00 AM** and **6:00 PM**
+
+### What It Does
 
 ```bash
 # Runs automatically 2x daily inside Docker container
@@ -485,11 +497,22 @@ This project supports deployment across multiple machines with automatic git syn
 python scripts/git_sync.py
 ```
 
-The sync script:
-- Pulls latest changes before pushing (handles multi-machine updates)
-- Auto-resolves simple conflicts
-- Commits code changes with timestamps
-- Excludes sensitive files (credentials, database)
+| Step | Action |
+|------|--------|
+| 1. Pull | Fetches latest from GitHub (code changes from other machines) |
+| 2. Commit | Stages local changes (database updates, matches) |
+| 3. Push | Pushes to GitHub (keeps all machines in sync) |
+
+### Conflict Resolution
+- **Code files**: Remote version wins (your latest push)
+- **database.db**: Local version wins (preserves running data)
+
+### Files Synced
+| Synced ✅ | NOT Synced ❌ |
+|-----------|---------------|
+| All Python code | `.env` (credentials) |
+| `database.db` | `ebay_tokens_*.json` |
+| Templates, docs | `utils/base.py` |
 
 ---
 
@@ -510,5 +533,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 <div align="center">
+
+**Built with ❤️ for the toner reselling community**
+
+[Report Bug](https://github.com/LeeAaron702/ebay-toner-monitor/issues) • [Request Feature](https://github.com/LeeAaron702/ebay-toner-monitor/issues)
 
 </div>
