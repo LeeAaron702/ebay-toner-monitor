@@ -22,15 +22,18 @@ Monitor Loop (main.py) - runs every 60s
   ├── Xerox Thread  → engine/xerox.py
   ├── Lexmark Thread → engine/lexmark.py
   └── Order History Thread (hourly)
+        ├── Sync orders from eBay API
+        └── check_and_backfill() → purchased_units
               │
               ▼
 SQLite Database (database.db)
-  ├── products      - Product catalog (471 items)
-  ├── seen_ids      - Deduplication (72-hour window)
-  ├── messages      - Raw listing data
-  ├── matches       - Profitable matches
-  ├── excluded_*    - Seller/keyword blacklists
-  └── order_history - Purchase tracking
+  ├── products        - Product catalog (471 items)
+  ├── seen_ids        - Deduplication (72-hour window)
+  ├── messages        - Raw listing data
+  ├── matches         - Profitable matches
+  ├── excluded_*      - Seller/keyword blacklists
+  ├── order_history   - Purchase tracking
+  └── purchased_units - Per-color unit analytics
 ```
 
 ## Key Files
@@ -38,6 +41,7 @@ SQLite Database (database.db)
 | File | Purpose |
 |------|---------|
 | `main.py` | Monitor orchestrator, spawns engine threads |
+| `backfill_matches.py` | Order→product matching, `check_and_backfill()` for auto-sync |
 | `engine/canon.py` | Canon lot parser (~1800 lines), handles "5-YELLOW, 3-MAGENTA" |
 | `engine/xerox.py` | Xerox SKU matcher, extracts "006R01512" patterns |
 | `engine/lexmark.py` | Lexmark part number matcher |
@@ -45,7 +49,8 @@ SQLite Database (database.db)
 | `db/listings_db.py` | Listings, matches, seen_ids tables |
 | `db/exclusions_db.py` | Seller/keyword exclusion tables |
 | `api/api_server.py` | FastAPI entrypoint, Telegram webhook |
-| `utils/telegram_service.py` | Bot command handlers |
+| `api/routers/admin.py` | Admin Panel routes (products, exclusions, analytics) |
+| `utils/telegram_service.py` | HTTP message helpers, /start and /ping handlers |
 
 ## Database Access
 
@@ -110,10 +115,18 @@ CREATE TABLE products (
     net_cost REAL,              -- Target purchase price
     bsr INTEGER,                -- Best Seller Rank
     sellable INTEGER DEFAULT 1,
+    notes TEXT,                 -- User annotations (shown in Telegram)
     group_key TEXT,             -- For block grouping
     UNIQUE(brand, asin)
 );
 ```
+
+## Telegram Integration
+
+- **Webhook mode** for reliable message delivery
+- **Slash commands removed** — exclusion management via Admin Panel at `/admin/exclusions`
+- Only `/start` and `/ping` commands remain
+- Product `notes` field displayed as `⚠️ Note: {notes}` in alerts when present
 
 ## Environment Variables
 
@@ -146,10 +159,24 @@ python -c "from db.products_db import get_canon_products; print(len(get_canon_pr
 
 ## Conventions
 
-1. **Logging:** Use `from utils.base import _log` for timestamped output
+1. **Logging:** Define `_log()` locally in each file for consistent prefixed output
 2. **Imports:** Standard library → Third-party → Local
 3. **Error handling:** Log and continue, don't crash the loop
 4. **Telegram:** Engines use direct HTTP (not PTB) since they run in subprocess
+
+## Incremental Backfill
+
+Order history purchases need to be matched against products to populate `purchased_units` for analytics:
+
+- **Automatic:** `check_and_backfill()` runs after each hourly order history sync
+- **Manual:** `python backfill_matches.py` for one-time full backfill
+- **Idempotent:** Safe to run multiple times - only processes unprocessed orders
+- **Sentinel entries:** Orders without matches get `color='unmatched'` entries to mark as processed
+
+```python
+from backfill_matches import check_and_backfill
+result = check_and_backfill(verbose=True)  # Returns: {status, processed, matched, ...}
+```
 
 ## Gotchas
 

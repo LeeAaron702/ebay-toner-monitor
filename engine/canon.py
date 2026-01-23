@@ -1091,6 +1091,7 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
             "BSR": bsr_val,
             "net": net_val,
             "sellable": str(row["sellable"]).strip().lower() == "sellable",
+            "notes": row.get("notes", None),
         }
     return None
 
@@ -1709,6 +1710,10 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                 f"Net: ${net_cost:.2f}\n"
                 f"Profit: {prof_emoji} ${profit:.2f} ({profit_margin_pct:.1f}%)\n"
             )
+            
+            # Add notes if present (e.g., "DO NOT BUY", "known bad match")
+            if match.get("notes"):
+                msg += f"⚠️ Note: {match['notes']}\n"
 
             # Create lot_breakdown for single items to enable analytics
             # Convert numpy int64 to Python int for JSON serialization

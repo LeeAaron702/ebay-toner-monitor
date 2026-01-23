@@ -82,16 +82,33 @@
         </label>
         {% endif %}
         
+        {% if product and product.bsr %}
         <label>
             BSR (Best Seller Rank)
-            <input type="number" name="bsr" value="{{ product.bsr if product else '' }}" 
-                   min="0" placeholder="5000">
+            <input type="text" value="{{ '{:,}'.format(product.bsr) }}" disabled readonly>
+            <span class="text-xs text-muted">Set by analyzer import only</span>
+        </label>
+        {% endif %}
+        
+        <label>
+            Sellable
+            <select name="sellable">
+                <option value="1" {% if not product or product.sellable %}selected{% endif %}>Yes</option>
+                <option value="0" {% if product and not product.sellable %}selected{% endif %}>No</option>
+            </select>
+            <span class="text-xs text-muted">Whether this item is sellable on Amazon</span>
         </label>
         
         <label style="grid-column: 1 / -1;">
             Variant Label
             <input type="text" name="variant_label" value="{{ product.variant_label if product else '' }}" 
                    placeholder="e.g., 054H Black High Yield">
+        </label>
+        
+        <label style="grid-column: 1 / -1;">
+            Notes
+            <textarea name="notes" rows="3" placeholder="Internal notes (e.g., 'DO NOT BUY', 'known bad match', special instructions)">{{ product.notes if product else '' }}</textarea>
+            <span class="text-xs text-muted">Notes will appear in Telegram messages if set</span>
         </label>
     </div>
     

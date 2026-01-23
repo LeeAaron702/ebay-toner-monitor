@@ -44,6 +44,8 @@ from db.listings_db import (
     MATCHES_TABLE,
     expand_order_to_purchased_units,
     insert_purchased_units_batch,
+    get_unprocessed_orders,
+    get_backfill_status,
 )
 
 from engine.canon import (
@@ -55,6 +57,11 @@ from engine.canon import (
     extract_pack_size,
 )
 from db.products_db import get_canon_products
+
+
+def _log(message: str) -> None:
+    """Log a message with script prefix."""
+    print(f"LOG - backfill_matches.py - {message}")
 
 
 def sanitize_for_json(obj):
@@ -269,7 +276,7 @@ def backfill_matches_for_order(row: dict, sheet_df) -> dict:
 
 
 def run_backfill():
-    """Main backfill function."""
+    """Main backfill function - processes ALL orders. Use for initial setup."""
     print("=" * 60)
     print("BACKFILL MATCHES FROM ORDER HISTORY")
     print("=" * 60)
@@ -277,15 +284,6 @@ def run_backfill():
     
     # Initialize DB
     init_db()
-    
-    # Load Canon products from SQL database
-    print("Loading Canon products from SQL...")
-    sheet_df = get_canon_products()
-    if sheet_df is None or sheet_df.empty:
-        print("ERROR: Could not load Canon products from database. Aborting.")
-        return
-    print(f"  Loaded {len(sheet_df)} product variants from SQL.")
-    print()
     
     # Get all order history rows
     print("Fetching order history...")
@@ -296,10 +294,55 @@ def run_backfill():
     if not orders:
         print("No orders to process. Make sure order_history has been populated first.")
         print("Run the main.py or order history fetch before this script.")
-        return
+        return 0
     
-    # Process each order
-    print("Processing orders...")
+    # Run the backfill
+    result = backfill_orders(orders, verbose=True)
+    
+    print()
+    print("=" * 60)
+    print("BACKFILL COMPLETE")
+    print("=" * 60)
+    
+    # Print summary
+    _print_db_stats()
+    
+    return result['matched']
+
+
+def backfill_orders(orders: list, verbose: bool = False) -> dict:
+    """
+    Core backfill logic - processes a list of order rows.
+    
+    This is the reusable function for incremental backfill.
+    
+    Args:
+        orders: List of order_history row dicts to process
+        verbose: If True, print progress messages
+        
+    Returns:
+        Dict with stats: {processed, matched, skipped, errors}
+    """
+    if not orders:
+        return {'processed': 0, 'matched': 0, 'skipped': 0, 'errors': 0}
+    
+    # Load Canon products from SQL database
+    if verbose:
+        print("Loading Canon products from SQL...")
+    sheet_df = get_canon_products()
+    if sheet_df is None or sheet_df.empty:
+        if verbose:
+            print("ERROR: Could not load Canon products from database.")
+            print("  Will mark orders as processed with 'unmatched' sentinel entries.")
+        # Still call _populate_units_for_orders to create sentinel entries
+        # This ensures idempotency - we don't keep retrying orders
+        _populate_units_for_orders(orders, verbose)
+        return {'processed': len(orders), 'matched': 0, 'skipped': 0, 'errors': 0}
+    if verbose:
+        print(f"  Loaded {len(sheet_df)} product variants from SQL.")
+        print()
+        print("Processing orders...")
+    
     processed = 0
     matched = 0
     skipped = 0
@@ -374,43 +417,156 @@ def run_backfill():
             processed += 1
             
             # Progress indicator
-            if processed % 10 == 0:
+            if verbose and processed % 10 == 0:
                 print(f"  Processed {processed}/{len(orders)} orders...")
                 
         except Exception as e:
-            print(f"  ERROR processing order {order_id}: {e}")
+            if verbose:
+                print(f"  ERROR processing order {order_id}: {e}")
             errors += 1
     
-    print()
-    print(f"Processing complete:")
-    print(f"  Total orders: {len(orders)}")
-    print(f"  Processed: {processed}")
-    print(f"  Matched: {matched}")
-    print(f"  Skipped (no title or already matched): {skipped}")
-    print(f"  Errors: {errors}")
-    print()
+    if verbose:
+        print()
+        print(f"Processing complete:")
+        print(f"  Total orders: {len(orders)}")
+        print(f"  Processed: {processed}")
+        print(f"  Matched: {matched}")
+        print(f"  Skipped (no title or already matched): {skipped}")
+        print(f"  Errors: {errors}")
     
-    # Now populate purchased_units
-    print("Populating purchased_units table...")
-    orders_with_matches = get_all_order_history_rows()  # Re-fetch with updated match columns
+    # Populate purchased_units for the processed orders
+    _populate_units_for_orders(orders, verbose)
+    
+    return {
+        'processed': processed,
+        'matched': matched,
+        'skipped': skipped,
+        'errors': errors,
+    }
+
+
+def check_and_backfill(verbose: bool = False) -> dict:
+    """
+    Check for unprocessed orders and backfill if any found.
+    
+    This is the main entry point for incremental backfill, designed to be
+    called after order history sync. It only processes orders that don't
+    have purchased_units entries yet.
+    
+    Args:
+        verbose: If True, print progress messages
+        
+    Returns:
+        Dict with stats: {processed, matched, skipped, errors, status}
+        status will be 'no_action' if no orders needed processing
+    """
+    # Initialize DB (idempotent)
+    init_db()
+    
+    # Check current status
+    status = get_backfill_status()
+    unprocessed_count = status['unprocessed_orders']
+    
+    if unprocessed_count == 0:
+        if verbose:
+            _log("Backfill check: No unprocessed orders found")
+        return {
+            'processed': 0,
+            'matched': 0,
+            'skipped': 0,
+            'errors': 0,
+            'status': 'no_action',
+        }
+    
+    # Get the unprocessed orders
+    unprocessed = get_unprocessed_orders()
+    
+    if verbose:
+        _log(f"Backfill check: Found {len(unprocessed)} unprocessed orders, starting backfill...")
+    
+    # Run backfill on just these orders
+    result = backfill_orders(unprocessed, verbose=verbose)
+    result['status'] = 'completed'
+    
+    if verbose:
+        _log(f"Backfill complete: {result['matched']} orders matched, {result['errors']} errors")
+    
+    return result
+
+
+def _populate_units_for_orders(orders: list, verbose: bool = False):
+    """
+    Populate purchased_units for a specific list of orders.
+    
+    For orders with lot_breakdown data, creates color-specific entries.
+    For orders without matches, creates a sentinel entry with NULL ASIN
+    to mark the order as "processed" for idempotency purposes.
+    """
+    if verbose:
+        print()
+        print("Populating purchased_units table...")
+    
+    # Re-fetch the orders to get updated match columns
+    order_ids = {(r['order_id'], r['transaction_id']) for r in orders}
+    
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
     
     all_units = []
-    for row in orders_with_matches:
-        units = expand_order_to_purchased_units(row)
-        all_units.extend(units)
+    orders_with_units = set()
     
+    for order_id, transaction_id in order_ids:
+        cur.execute(
+            f'SELECT * FROM {ORDER_HISTORY_TABLE} WHERE order_id = ? AND transaction_id = ?',
+            (order_id, transaction_id)
+        )
+        row = cur.fetchone()
+        if row:
+            row_dict = dict(row)
+            units = expand_order_to_purchased_units(row_dict)
+            if units:
+                all_units.extend(units)
+                orders_with_units.add((order_id, transaction_id))
+    
+    conn.close()
+    
+    # Insert units for matched orders
     if all_units:
         inserted, skipped_units = insert_purchased_units_batch(all_units)
-        print(f"  Inserted {inserted} purchased units, {skipped_units} skipped (duplicates)")
-    else:
-        print("  No units to insert (no lot_breakdown data found)")
+        if verbose:
+            print(f"  Inserted {inserted} purchased units, {skipped_units} skipped (duplicates)")
     
-    print()
-    print("=" * 60)
-    print("BACKFILL COMPLETE")
-    print("=" * 60)
-    
-    # Print summary
+    # For orders without lot_breakdown, insert sentinel entries
+    # This marks them as "processed" so we don't keep retrying
+    orders_without_match = order_ids - orders_with_units
+    if orders_without_match:
+        sentinel_units = []
+        for order_id, transaction_id in orders_without_match:
+            sentinel_units.append({
+                'order_id': order_id,
+                'transaction_id': transaction_id,
+                'item_id': None,
+                'asin': None,  # NULL ASIN marks as "no match"
+                'color': 'unmatched',
+                'quantity': 0,
+                'unit_cost': 0.0,
+                'purchased_date': None,
+                'bsr': 0,
+                'net_per_unit': 0.0,
+                'model': None,
+                'capacity': None,
+                'lot_type': 'unmatched',
+                'match_index': 0,
+            })
+        
+        sentinel_inserted, sentinel_skipped = insert_purchased_units_batch(sentinel_units)
+        if verbose:
+            print(f"  Inserted {sentinel_inserted} sentinel entries for unmatched orders, {sentinel_skipped} skipped")
+
+
+def _print_db_stats():
+    """Print database statistics."""
     conn = get_db_connection()
     cur = conn.cursor()
     

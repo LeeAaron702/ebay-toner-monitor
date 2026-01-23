@@ -170,9 +170,9 @@ def my_query():
 │   ├── api_server.py           # Main entrypoint
 │   └── routers/
 │       ├── __init__.py
+│       ├── admin.py            # Admin panel routes
 │       ├── exclude_api.py      # Exclusion REST endpoints
-│       ├── products_api.py     # Product CRUD endpoints
-│       └── telegram_exclude_commands.py
+│       └── products_api.py     # Product CRUD endpoints
 │
 ├── db/                         # Database layer
 │   ├── __init__.py
@@ -193,7 +193,7 @@ def my_query():
 ├── utils/                      # Shared utilities
 │   ├── __init__.py
 │   ├── base.py                 # Common helpers (_log, etc.)
-│   ├── telegram_service.py     # Bot command handlers
+│   ├── telegram_service.py     # Telegram utilities (HTTP helpers, /start, /ping)
 │   ├── analyzer_job.py         # Scheduled analyzer scraper
 │   ├── analyzer_scraper.py     # Playwright scraper
 │   └── analyzer_parser.py      # Parse analyzer results

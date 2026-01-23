@@ -4,10 +4,12 @@ Entrypoint for FastAPI + python-telegram-bot (PTB) in webhook mode.
 
 - Starts your monitor in a background subprocess
 - Builds, initializes, and starts the PTB Application
-- Sets Telegram command list from a single source of truth (telegram_utils.COMMANDS)
 - Receives Telegram webhooks at /telegram/webhook and enqueues Updates
 - Cleanly stops PTB on shutdown
 - Serves Admin Panel at /admin/*
+
+Note: Telegram slash commands for exclusion management have been removed.
+Use the admin panel at /admin/exclusions instead.
 """
 
 from __future__ import annotations
@@ -102,8 +104,7 @@ async def on_startup():
     await ptb_app.initialize()
     await ptb_app.start()
 
-    # Commands and webhook
-    await ptb_app.bot.set_my_commands(telegram_service.get_bot_commands())
+    # Set up webhook (no slash commands menu - use admin panel instead)
     await ptb_app.bot.set_webhook(
         url=TELEGRAM_WEBHOOK_URL,              # e.g. https://your.host/telegram/webhook
         secret_token=TELEGRAM_WEBHOOK_SECRET,  # Telegram will echo this in the header

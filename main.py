@@ -14,6 +14,7 @@ from engine.canon import canon, LOCAL_TZ
 from engine.xerox import xerox
 from engine.lexmark import lexmark
 from order_history.ebay_order_history import run_order_history, send_stats_report, REPORT_SCHEDULE
+from backfill_matches import check_and_backfill
 from db.products_db import (
     init_products_db,
     get_canon_products,
@@ -111,11 +112,17 @@ def _run_lexmark_job(token: str, refresh_event: threading.Event) -> None:
 
 
 def _run_order_history_job() -> None:
-    """Run order history fetch in a thread-safe manner."""
+    """Run order history fetch and incremental backfill in a thread-safe manner."""
     try:
+        # Fetch new orders from eBay
         new_count = run_order_history()
         ts = datetime.now(LOCAL_TZ).strftime("%b %d %Y, %I:%M %p %Z")
         print(f"LOG - Main.py - Order history: added {new_count} new rows at {ts}")
+        
+        # Run incremental backfill to process any unmatched orders
+        backfill_result = check_and_backfill(verbose=False)
+        if backfill_result['status'] == 'completed':
+            print(f"LOG - Main.py - Backfill: processed {backfill_result['matched']} orders")
     except Exception:
         print("Unexpected error in order_history:")
         traceback.print_exc()

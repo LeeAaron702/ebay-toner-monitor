@@ -64,9 +64,9 @@ The catalog is automatically refreshed daily via a **headless browser automation
 
 ### 📱 Telegram Integration
 - Instant profit alerts with item images
-- Interactive bot commands (`/stats`, `/exclude`)
+- Product notes displayed in alerts (e.g., "DO NOT BUY")
 - Webhook mode for reliability
-- Scheduled daily reports (9am, 12pm, 5pm PST)
+- Health check via `/ping` command
 
 </td>
 <td width="50%">
@@ -338,6 +338,8 @@ The system matches listings against a SQLite product catalog:
 | `net_cost` | Target buy price | 25.00 |
 | `asin` | Amazon ASIN | B07XXXXXX |
 | `bsr` | Best Seller Rank | 15000 |
+| `sellable` | Can be sold on Amazon | 1 (yes), 0 (no) |
+| `notes` | User annotations | "DO NOT BUY", "known bad match" |
 
 ---
 
@@ -374,11 +376,10 @@ POST   /exclude/keywords/{brand}     # Add keyword filter
 
 | Command | Description |
 |---------|-------------|
-| `/start` | Initialize bot |
-| `/stats` | Today's match statistics |
-| `/exclude <seller>` | Add seller to blacklist |
-| `/unexclude <seller>` | Remove from blacklist |
-| `/help` | Show all commands |
+| `/start` | Initialize bot, show admin panel link |
+| `/ping` | Health check (responds "pong") |
+
+> **Note:** Exclusion management has moved to the web-based Admin Panel at `/admin/exclusions`.
 
 ---
 

@@ -10,6 +10,15 @@
 <!-- Date Range Filter -->
 <form class="filters" method="GET" action="/admin/analytics/spending">
     <label>
+        Account
+        <select name="account">
+            <option value="all" {% if account == 'all' %}selected{% endif %}>All Accounts</option>
+            {% for acc in accounts %}
+            <option value="{{ acc }}" {% if account == acc %}selected{% endif %}>{{ acc }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>
         Start Date
         <input type="date" name="start_date" value="{{ start_date }}">
     </label>
@@ -79,6 +88,42 @@
         </div>
     </div>
 </div>
+
+<!-- Account Comparison Section -->
+{% if account_comparison and account_comparison|length > 1 %}
+<div class="section">
+    <div class="section-title">Account Comparison</div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+        <div class="card">
+            <h3 style="margin-bottom: 1rem;">Spending by Account</h3>
+            <canvas id="accountChart" height="200"></canvas>
+        </div>
+        <div class="card">
+            <h3 style="margin-bottom: 1rem;">Account Summary</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Account</th>
+                        <th>Orders</th>
+                        <th>Spent</th>
+                        <th>Avg Order</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for acc in account_comparison %}
+                    <tr>
+                        <td><strong>{{ acc.account }}</strong></td>
+                        <td>{{ acc.order_count }}</td>
+                        <td>${{ "%.2f" | format(acc.total_spent or 0) }}</td>
+                        <td>${{ "%.2f" | format(acc.avg_order or 0) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_scripts %}
@@ -163,6 +208,52 @@ const brandChart = new Chart(brandCtx, {
     }
 });
 
+// Account comparison chart (if exists)
+{% if account_comparison and account_comparison|length > 1 %}
+const accountCtx = document.getElementById('accountChart').getContext('2d');
+const accountChart = new Chart(accountCtx, {
+    type: 'bar',
+    data: {
+        labels: [{% for acc in account_comparison %}'{{ acc.account }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        datasets: [{
+            label: 'Total Spent',
+            data: [{% for acc in account_comparison %}{{ acc.total_spent or 0 }}{% if not loop.last %}, {% endif %}{% endfor %}],
+            backgroundColor: '#404040',
+            borderColor: '#171717',
+            borderWidth: 1
+        }]
+    },
+    options: {
+        responsive: true,
+        indexAxis: 'y',
+        scales: {
+            x: {
+                beginAtZero: true,
+                grid: { color: '#e5e5e5' },
+                ticks: {
+                    callback: function(value) {
+                        return '$' + value;
+                    }
+                }
+            },
+            y: {
+                grid: { display: false }
+            }
+        },
+        plugins: {
+            legend: { display: false },
+            tooltip: {
+                callbacks: {
+                    label: function(context) {
+                        return '$' + context.raw.toFixed(2);
+                    }
+                }
+            }
+        }
+    }
+});
+{% endif %}
+
 // Interval toggle
 document.querySelectorAll('.interval-btn').forEach(btn => {
     btn.addEventListener('click', async function() {
@@ -174,7 +265,7 @@ document.querySelectorAll('.interval-btn').forEach(btn => {
         this.classList.add('active');
         this.classList.remove('btn-secondary');
         
-        const response = await fetch(`/admin/api/spending-chart-data?start_date={{ start_date }}&end_date={{ end_date }}&interval=${interval}`);
+        const response = await fetch(`/admin/api/spending-chart-data?start_date={{ start_date }}&end_date={{ end_date }}&interval=${interval}&account={{ account }}`);
         const data = await response.json();
         
         spendingChart.data.labels = data.labels;

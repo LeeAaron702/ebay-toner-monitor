@@ -668,6 +668,7 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
                 "capacity": variant.get("capacity"),
                 "pack_size": variant.get("pack_size"),
                 "bsr": variant.get("bsr"),
+                "notes": variant.get("notes"),
             })
 
     # Only keep the first (exact) match - no alternatives
@@ -724,6 +725,10 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
             f"Net: {net_display}\n"
             f"Profit: {profit_emoji} {profit_display}\n"
         )
+        
+        # Add notes if present (e.g., "DO NOT BUY", "known bad match")
+        if primary.get("notes"):
+            msg += f"⚠️ Note: {primary['notes']}\n"
     else:
         msg += "Product Match\nNo matching product found\n"
 

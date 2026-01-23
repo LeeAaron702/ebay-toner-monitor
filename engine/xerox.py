@@ -544,6 +544,7 @@ def build_listing_message(
                     "net_cost": net_cost,
                     "pack_size": variant.get("pack_size"),
                     "color": variant.get("color"),
+                    "notes": variant.get("notes"),
                 }
             )
 
@@ -601,6 +602,10 @@ def build_listing_message(
             f"Net: {net_display}\n"
             f"Profit: {profit_emoji} {profit_display}\n"
         )
+        
+        # Add notes if present (e.g., "DO NOT BUY", "known bad match")
+        if primary.get("notes"):
+            msg += f"⚠️ Note: {primary['notes']}\n"
 
         alternatives = variant_entries[1:]
         if alternatives:

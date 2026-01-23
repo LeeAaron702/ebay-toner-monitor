@@ -555,6 +555,7 @@
                     <div class="section-label">Products</div>
                     <li><a href="/admin/products" {% if '/products' in request.url.path and '/upload' not in request.url.path %}class="active"{% endif %}>Manage</a></li>
                     <li><a href="/admin/products/upload" {% if '/upload' in request.url.path %}class="active"{% endif %}>Bulk Upload</a></li>
+                    <li><a href="/admin/exclusions" {% if '/exclusions' in request.url.path %}class="active"{% endif %}>Exclusions</a></li>
                     
                     <div class="section-label">Analytics</div>
                     <li><a href="/admin/analytics/orders" {% if '/orders' in request.url.path and '/by-item' not in request.url.path %}class="active"{% endif %}>Order History</a></li>

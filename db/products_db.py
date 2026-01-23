@@ -65,6 +65,9 @@ def init_products_db():
                 bsr INTEGER,
                 sellable INTEGER DEFAULT 1,
                 
+                -- User annotations
+                notes TEXT,
+                
                 -- Source tracking
                 source_tab TEXT,
                 is_model_block INTEGER,
@@ -87,6 +90,12 @@ def init_products_db():
         conn.execute(f'CREATE INDEX IF NOT EXISTS idx_products_group_key ON {PRODUCTS_TABLE}(group_key)')
         # Composite index for Canon matching
         conn.execute(f'CREATE INDEX IF NOT EXISTS idx_products_canon_match ON {PRODUCTS_TABLE}(brand, model, capacity, color, pack_size)')
+        
+        # Migration: add notes column if it doesn't exist
+        cursor = conn.execute(f"PRAGMA table_info({PRODUCTS_TABLE})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'notes' not in columns:
+            conn.execute(f'ALTER TABLE {PRODUCTS_TABLE} ADD COLUMN notes TEXT')
     
     conn.close()
 
@@ -216,9 +225,9 @@ def create_product(product: Dict[str, Any]) -> str:
                 INSERT INTO {PRODUCTS_TABLE} (
                     id, brand, model, capacity, group_key,
                     part_number, variant_label, color, pack_size,
-                    asin, amazon_sku, net_cost, bsr, sellable,
+                    asin, amazon_sku, net_cost, bsr, sellable, notes,
                     source_tab, is_model_block, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
             ''', (
                 product_id,
                 brand,
@@ -234,6 +243,7 @@ def create_product(product: Dict[str, Any]) -> str:
                 product.get('net_cost'),
                 product.get('bsr'),
                 1 if product.get('sellable', True) else 0,
+                product.get('notes'),
                 product.get('source_tab'),
                 1 if product.get('is_model_block') else 0 if product.get('is_model_block') is False else None
             ))

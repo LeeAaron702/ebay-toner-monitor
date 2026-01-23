@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+
+{% block title %}Exclusions{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Exclusions</h1>
+    <p>Manage excluded sellers and keywords. Listings from these sellers or containing these keywords will be filtered out.</p>
+</div>
+
+<!-- Sellers Section -->
+<div class="section">
+    <div class="section-title">Excluded Sellers</div>
+    <div class="card">
+        <form id="add-seller-form" style="display: flex; gap: var(--space-2); margin-bottom: var(--space-4);">
+            <input type="text" id="new-seller" placeholder="Enter seller name" class="form-control" style="flex: 1;">
+            <button type="submit" class="btn">Add Seller</button>
+        </form>
+        
+        <div id="sellers-list">
+            {% if sellers %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Seller Name</th>
+                        <th style="width: 100px; text-align: right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for seller in sellers %}
+                    <tr data-seller="{{ seller }}">
+                        <td>{{ seller }}</td>
+                        <td style="text-align: right;">
+                            <button class="btn btn-secondary btn-sm delete-seller-btn" data-seller="{{ seller }}">Remove</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted">No excluded sellers.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Canon Keywords Section -->
+<div class="section">
+    <div class="section-title">Canon Excluded Keywords</div>
+    <div class="card">
+        <form id="add-canon-keyword-form" style="display: flex; gap: var(--space-2); margin-bottom: var(--space-4);">
+            <input type="text" id="new-canon-keyword" placeholder="Enter keyword or phrase" class="form-control" style="flex: 1;">
+            <button type="submit" class="btn">Add Keyword</button>
+        </form>
+        
+        <div id="canon-keywords-list">
+            {% if canon_keywords %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Keyword / Phrase</th>
+                        <th style="width: 100px; text-align: right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for keyword in canon_keywords %}
+                    <tr data-keyword="{{ keyword }}">
+                        <td>{{ keyword }}</td>
+                        <td style="text-align: right;">
+                            <button class="btn btn-secondary btn-sm delete-canon-keyword-btn" data-keyword="{{ keyword }}">Remove</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted">No excluded keywords for Canon.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Xerox Keywords Section -->
+<div class="section">
+    <div class="section-title">Xerox Excluded Keywords</div>
+    <div class="card">
+        <form id="add-xerox-keyword-form" style="display: flex; gap: var(--space-2); margin-bottom: var(--space-4);">
+            <input type="text" id="new-xerox-keyword" placeholder="Enter keyword or phrase" class="form-control" style="flex: 1;">
+            <button type="submit" class="btn">Add Keyword</button>
+        </form>
+        
+        <div id="xerox-keywords-list">
+            {% if xerox_keywords %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Keyword / Phrase</th>
+                        <th style="width: 100px; text-align: right;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for keyword in xerox_keywords %}
+                    <tr data-keyword="{{ keyword }}">
+                        <td>{{ keyword }}</td>
+                        <td style="text-align: right;">
+                            <button class="btn btn-secondary btn-sm delete-xerox-keyword-btn" data-keyword="{{ keyword }}">Remove</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted">No excluded keywords for Xerox.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Toast notification helper
+function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    toast.style.cssText = `
+        position: fixed; bottom: 20px; right: 20px;
+        padding: 12px 24px; background: ${type === 'success' ? '#171717' : '#dc2626'};
+        color: white; border-radius: 4px; z-index: 1000;
+        font-size: 14px; animation: fadeIn 0.2s;
+    `;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
+}
+
+// API helper
+async function apiRequest(method, url, body = null) {
+    const options = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) options.body = JSON.stringify(body);
+    const resp = await fetch(url, options);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Request failed');
+    return data;
+}
+
+// Sellers
+document.getElementById('add-seller-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('new-seller');
+    const name = input.value.trim();
+    if (!name) return;
+    
+    try {
+        await apiRequest('POST', '/exclude/sellers', { name });
+        showToast(`Added seller: ${name}`);
+        location.reload();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+});
+
+document.querySelectorAll('.delete-seller-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const seller = btn.dataset.seller;
+        if (!confirm(`Remove seller "${seller}" from exclusions?`)) return;
+        
+        try {
+            await apiRequest('DELETE', `/exclude/sellers/${encodeURIComponent(seller)}`);
+            showToast(`Removed seller: ${seller}`);
+            btn.closest('tr').remove();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    });
+});
+
+// Canon Keywords
+document.getElementById('add-canon-keyword-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('new-canon-keyword');
+    const phrase = input.value.trim();
+    if (!phrase) return;
+    
+    try {
+        await apiRequest('POST', '/exclude/canon/keywords', { phrase });
+        showToast(`Added Canon keyword: ${phrase}`);
+        location.reload();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+});
+
+document.querySelectorAll('.delete-canon-keyword-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const keyword = btn.dataset.keyword;
+        if (!confirm(`Remove keyword "${keyword}" from Canon exclusions?`)) return;
+        
+        try {
+            await apiRequest('DELETE', `/exclude/canon/keywords/${encodeURIComponent(keyword)}`);
+            showToast(`Removed Canon keyword: ${keyword}`);
+            btn.closest('tr').remove();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    });
+});
+
+// Xerox Keywords
+document.getElementById('add-xerox-keyword-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('new-xerox-keyword');
+    const phrase = input.value.trim();
+    if (!phrase) return;
+    
+    try {
+        await apiRequest('POST', '/exclude/xerox/keywords', { phrase });
+        showToast(`Added Xerox keyword: ${phrase}`);
+        location.reload();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+});
+
+document.querySelectorAll('.delete-xerox-keyword-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const keyword = btn.dataset.keyword;
+        if (!confirm(`Remove keyword "${keyword}" from Xerox exclusions?`)) return;
+        
+        try {
+            await apiRequest('DELETE', `/exclude/xerox/keywords/${encodeURIComponent(keyword)}`);
+            showToast(`Removed Xerox keyword: ${keyword}`);
+            btn.closest('tr').remove();
+        } catch (err) {
+            showToast(err.message, 'error');
+        }
+    });
+});
+</script>
+{% endblock %}

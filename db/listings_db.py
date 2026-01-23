@@ -591,7 +591,8 @@ def expand_order_to_purchased_units(order_row: Dict[str, Any]) -> List[Dict[str,
 	order_id = order_row.get('order_id')
 	transaction_id = order_row.get('transaction_id')
 	item_id = order_row.get('item_id')
-	purchased_date = order_row.get('created_time', '')[:10]  # Extract date portion
+	created_time = order_row.get('created_time') or ''
+	purchased_date = created_time[:10] if created_time else None  # Extract date portion
 	
 	# Get total transaction cost for unit cost calculation
 	transaction_price = order_row.get('transaction_price')
@@ -757,6 +758,71 @@ def populate_purchased_units_from_order_history() -> Tuple[int, int]:
 	if all_units:
 		return insert_purchased_units_batch(all_units)
 	return 0, 0
+
+
+def get_unprocessed_orders() -> List[Dict[str, Any]]:
+	"""
+	Find order_history rows that have no corresponding purchased_units entries.
+	
+	Used for incremental backfill - only processes orders that haven't been
+	matched yet. This handles:
+	- Fresh DB after reset (all orders need processing)
+	- New orders added since last backfill
+	- Orders that failed to process previously
+	
+	Returns:
+		List of order_history row dicts that need backfill processing
+	"""
+	conn = get_db_connection()
+	conn.row_factory = sqlite3.Row
+	cur = conn.cursor()
+	
+	# Find orders with no purchased_units entries
+	# Using LEFT JOIN + NULL check is more efficient than NOT EXISTS for SQLite
+	query = f'''
+		SELECT oh.*
+		FROM {ORDER_HISTORY_TABLE} oh
+		LEFT JOIN {PURCHASED_UNITS_TABLE} pu 
+			ON oh.order_id = pu.order_id AND oh.transaction_id = pu.transaction_id
+		WHERE pu.id IS NULL
+		ORDER BY oh.order_id
+	'''
+	
+	cur.execute(query)
+	rows = cur.fetchall()
+	conn.close()
+	
+	return [dict(row) for row in rows]
+
+
+def get_backfill_status() -> Dict[str, Any]:
+	"""
+	Get statistics on backfill status for monitoring/debugging.
+	
+	Returns:
+		Dict with counts: total_orders, processed_orders, unprocessed_orders
+	"""
+	conn = get_db_connection()
+	cur = conn.cursor()
+	
+	# Total orders
+	cur.execute(f'SELECT COUNT(*) FROM {ORDER_HISTORY_TABLE}')
+	total_orders = cur.fetchone()[0]
+	
+	# Orders with purchased_units (distinct by order_id + transaction_id)
+	cur.execute(f'''
+		SELECT COUNT(DISTINCT order_id || '-' || transaction_id) 
+		FROM {PURCHASED_UNITS_TABLE}
+	''')
+	processed_orders = cur.fetchone()[0]
+	
+	conn.close()
+	
+	return {
+		'total_orders': total_orders,
+		'processed_orders': processed_orders,
+		'unprocessed_orders': total_orders - processed_orders,
+	}
 
 
 # ============================================================================

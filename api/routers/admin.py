@@ -38,6 +38,11 @@ from db.products_db import (
     VALID_BRANDS,
 )
 from db.listings_db import get_db_connection
+from db.exclusions_db import (
+    list_sellers as db_list_sellers,
+    list_canon_keywords as db_list_canon_keywords,
+    list_xerox_keywords as db_list_xerox_keywords,
+)
 
 # ---- Configuration ----
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -178,6 +183,26 @@ async def dashboard(request: Request, user: str = Depends(require_auth)):
 
 
 # =============================================================================
+# Exclusions Management Routes
+# =============================================================================
+
+@router.get("/exclusions", response_class=HTMLResponse)
+async def exclusions_page(request: Request, user: str = Depends(require_auth)):
+    """Exclusions management page."""
+    sellers = db_list_sellers()
+    canon_keywords = db_list_canon_keywords()
+    xerox_keywords = db_list_xerox_keywords()
+    
+    return templates.TemplateResponse("exclusions.html", {
+        "request": request,
+        "user": user,
+        "sellers": sellers,
+        "canon_keywords": canon_keywords,
+        "xerox_keywords": xerox_keywords,
+    })
+
+
+# =============================================================================
 # Product Management Routes
 # =============================================================================
 
@@ -248,10 +273,11 @@ async def create_new_product(
     pack_size: int = Form(1),
     asin: str = Form(...),
     amazon_sku: str = Form(None),
-    bsr: int = Form(None),
+    sellable: int = Form(1),
     variant_label: str = Form(None),
+    notes: str = Form(None),
 ):
-    """Create a new product. Note: net_cost is managed by analyzer only."""
+    """Create a new product. Note: net_cost and bsr are managed by analyzer only."""
     try:
         product_data = {
             "brand": brand,
@@ -263,8 +289,10 @@ async def create_new_product(
             "asin": asin,
             "amazon_sku": amazon_sku or None,
             "net_cost": None,  # Only set by analyzer
-            "bsr": bsr,
+            "bsr": None,       # Only set by analyzer
+            "sellable": bool(sellable),
             "variant_label": variant_label or None,
+            "notes": notes or None,
         }
         product_id = create_product(product_data)
         return RedirectResponse(url=f"/admin/products?success=Product+created", status_code=303)
@@ -307,10 +335,11 @@ async def update_existing_product(
     pack_size: int = Form(1),
     asin: str = Form(None),
     amazon_sku: str = Form(None),
-    bsr: int = Form(None),
+    sellable: int = Form(1),
     variant_label: str = Form(None),
+    notes: str = Form(None),
 ):
-    """Update existing product. Note: net_cost is managed by analyzer only."""
+    """Update existing product. Note: net_cost and bsr are managed by analyzer only."""
     try:
         updates = {
             "model": model or None,
@@ -320,8 +349,10 @@ async def update_existing_product(
             "pack_size": pack_size,
             "asin": asin,
             "amazon_sku": amazon_sku or None,
-            "bsr": bsr,
+            "sellable": bool(sellable),
             "variant_label": variant_label or None,
+            "notes": notes or None,
+            # Note: net_cost and bsr are NOT included - they're analyzer-only
         }
         success = update_product(product_id, updates)
         if success:
@@ -684,7 +715,8 @@ async def spending_page(
     request: Request,
     user: str = Depends(require_auth),
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    account: str = None
 ):
     """Spending metrics page."""
     if not start_date:
@@ -695,8 +727,19 @@ async def spending_page(
     conn = get_db_connection()
     conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
     try:
+        # Get list of accounts for filter dropdown
+        cursor = conn.execute("SELECT DISTINCT account_label FROM order_history WHERE account_label IS NOT NULL AND account_label != '' ORDER BY account_label")
+        accounts = [row['account_label'] for row in cursor.fetchall()]
+        
+        # Build account filter clause
+        account_filter = ""
+        params_base = [start_date, end_date + ' 23:59:59']
+        if account and account != 'all':
+            account_filter = " AND account_label = ?"
+            params_base = [start_date, end_date + ' 23:59:59', account]
+        
         # Total spent and order count
-        cursor = conn.execute("""
+        cursor = conn.execute(f"""
             SELECT 
                 COUNT(DISTINCT order_id) as order_count,
                 SUM(CAST(order_total AS REAL)) as total_spent
@@ -704,10 +747,10 @@ async def spending_page(
                 SELECT order_id, order_total,
                        ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
                 FROM order_history
-                WHERE created_time >= ? AND created_time <= ?
+                WHERE created_time >= ? AND created_time <= ?{account_filter}
             )
             WHERE rn = 1
-        """, (start_date, end_date + ' 23:59:59'))
+        """, params_base)
         totals = cursor.fetchone()
         
         total_spent = totals['total_spent'] or 0
@@ -715,7 +758,7 @@ async def spending_page(
         avg_order_value = total_spent / order_count if order_count > 0 else 0
         
         # Daily spending for chart
-        cursor = conn.execute("""
+        cursor = conn.execute(f"""
             SELECT 
                 DATE(REPLACE(created_time, ' PST', '')) as date,
                 SUM(CAST(order_total AS REAL)) as daily_spent
@@ -723,16 +766,16 @@ async def spending_page(
                 SELECT order_id, order_total, created_time,
                        ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
                 FROM order_history
-                WHERE created_time >= ? AND created_time <= ?
+                WHERE created_time >= ? AND created_time <= ?{account_filter}
             )
             WHERE rn = 1
             GROUP BY DATE(REPLACE(created_time, ' PST', ''))
             ORDER BY date
-        """, (start_date, end_date + ' 23:59:59'))
+        """, params_base)
         daily_spending = cursor.fetchall()
         
         # Spending by brand (based on item_title keywords) - deduplicated by order
-        cursor = conn.execute("""
+        cursor = conn.execute(f"""
             SELECT 
                 CASE 
                     WHEN LOWER(item_title) LIKE '%canon%' THEN 'Canon'
@@ -745,13 +788,41 @@ async def spending_page(
                 SELECT order_id, order_total, item_title,
                        ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
                 FROM order_history
-                WHERE created_time >= ? AND created_time <= ?
+                WHERE created_time >= ? AND created_time <= ?{account_filter}
             )
             WHERE rn = 1
             GROUP BY brand
             ORDER BY spent DESC
-        """, (start_date, end_date + ' 23:59:59'))
+        """, params_base)
         brand_spending = cursor.fetchall()
+        
+        # Account comparison (only when viewing all accounts)
+        account_comparison = []
+        if not account or account == 'all':
+            cursor = conn.execute("""
+                SELECT 
+                    account_label as account,
+                    COUNT(DISTINCT order_id) as order_count,
+                    SUM(CAST(order_total AS REAL)) as total_spent
+                FROM (
+                    SELECT account_label, order_id, order_total,
+                           ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
+                    FROM order_history
+                    WHERE created_time >= ? AND created_time <= ?
+                      AND account_label IS NOT NULL AND account_label != ''
+                )
+                WHERE rn = 1
+                GROUP BY account_label
+                ORDER BY total_spent DESC
+            """, (start_date, end_date + ' 23:59:59'))
+            rows = cursor.fetchall()
+            for row in rows:
+                account_comparison.append({
+                    'account': row['account'],
+                    'order_count': row['order_count'],
+                    'total_spent': row['total_spent'] or 0,
+                    'avg_order': (row['total_spent'] or 0) / row['order_count'] if row['order_count'] > 0 else 0
+                })
     finally:
         conn.close()
     
@@ -760,11 +831,14 @@ async def spending_page(
         "user": user,
         "start_date": start_date,
         "end_date": end_date,
+        "account": account or "all",
+        "accounts": accounts,
         "total_spent": total_spent,
         "order_count": order_count,
         "avg_order_value": avg_order_value,
         "daily_spending": daily_spending,
         "brand_spending": brand_spending,
+        "account_comparison": account_comparison,
     })
 
 
@@ -857,7 +931,8 @@ async def spending_chart_data(
     user: str = Depends(require_auth),
     start_date: str = None,
     end_date: str = None,
-    interval: str = "daily"
+    interval: str = "daily",
+    account: str = None
 ):
     """Get spending data for Chart.js."""
     if not start_date:
@@ -865,11 +940,18 @@ async def spending_chart_data(
     if not end_date:
         end_date = datetime.now().strftime('%Y-%m-%d')
     
+    # Build account filter
+    account_filter = ""
+    params = [start_date, end_date + ' 23:59:59']
+    if account and account != 'all':
+        account_filter = " AND account_label = ?"
+        params.append(account)
+    
     conn = get_db_connection()
     conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
     try:
         if interval == "weekly":
-            cursor = conn.execute("""
+            cursor = conn.execute(f"""
                 SELECT 
                     strftime('%Y-W%W', REPLACE(created_time, ' PST', '')) as period,
                     SUM(CAST(order_total AS REAL)) as total
@@ -877,14 +959,14 @@ async def spending_chart_data(
                     SELECT order_id, order_total, created_time,
                            ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
                     FROM order_history
-                    WHERE created_time >= ? AND created_time <= ?
+                    WHERE created_time >= ? AND created_time <= ?{account_filter}
                 )
                 WHERE rn = 1
                 GROUP BY period
                 ORDER BY period
-            """, (start_date, end_date + ' 23:59:59'))
+            """, params)
         else:
-            cursor = conn.execute("""
+            cursor = conn.execute(f"""
                 SELECT 
                     DATE(REPLACE(created_time, ' PST', '')) as period,
                     SUM(CAST(order_total AS REAL)) as total
@@ -892,7 +974,7 @@ async def spending_chart_data(
                     SELECT order_id, order_total, created_time,
                            ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
                     FROM order_history
-                    WHERE created_time >= ? AND created_time <= ?
+                    WHERE created_time >= ? AND created_time <= ?{account_filter}
                 )
                 WHERE rn = 1
                 GROUP BY period
