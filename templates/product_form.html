@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}{% if is_new %}New Product{% else %}Edit Product{% endif %}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>{% if is_new %}New Product{% else %}Edit Product{% endif %}</h1>
+</div>
+
+{% if error %}
+<div class="alert alert-error">
+    {{ error }}
+</div>
+{% endif %}
+
+<form method="POST" action="{% if is_new %}/admin/products/new{% else %}/admin/products/{{ product.id }}/edit{% endif %}">
+    <div class="form-grid">
+        <label>
+            Brand *
+            <select name="brand" required {% if not is_new %}disabled{% endif %}>
+                <option value="">Select brand...</option>
+                {% for b in brands %}
+                <option value="{{ b }}" {% if product and product.brand == b %}selected{% endif %}>{{ b | title }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        
+        <label>
+            ASIN *
+            <input type="text" name="asin" value="{{ product.asin if product else '' }}" 
+                   required placeholder="B0XXXXXXXXX" pattern="[A-Z0-9]{10}">
+        </label>
+        
+        <label>
+            Model
+            <input type="text" name="model" value="{{ product.model if product else '' }}" 
+                   placeholder="e.g., 054H, 20N1">
+        </label>
+        
+        <label>
+            Part Number
+            <input type="text" name="part_number" value="{{ product.part_number if product else '' }}" 
+                   placeholder="e.g., 006R01512">
+        </label>
+        
+        <label>
+            Color
+            <select name="color">
+                <option value="">Select color...</option>
+                {% for c in ['Black', 'Cyan', 'Magenta', 'Yellow', 'Color', 'Photo Black'] %}
+                <option value="{{ c }}" {% if product and product.color == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        
+        <label>
+            Capacity
+            <select name="capacity">
+                <option value="">Select capacity...</option>
+                {% for c in ['Standard', 'High', 'Extra High', 'Super High'] %}
+                <option value="{{ c }}" {% if product and product.capacity == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        
+        <label>
+            Pack Size
+            <input type="number" name="pack_size" value="{{ product.pack_size if product else 1 }}" 
+                   min="1" max="10">
+        </label>
+        
+        <label>
+            Amazon SKU
+            <input type="text" name="amazon_sku" value="{{ product.amazon_sku if product else '' }}">
+        </label>
+        
+        {% if product and product.net_cost %}
+        <label>
+            Net Cost ($)
+            <input type="text" value="${{ '%.2f' | format(product.net_cost) }}" disabled readonly>
+            <span class="text-xs text-muted">Set by analyzer import only</span>
+        </label>
+        {% endif %}
+        
+        <label>
+            BSR (Best Seller Rank)
+            <input type="number" name="bsr" value="{{ product.bsr if product else '' }}" 
+                   min="0" placeholder="5000">
+        </label>
+        
+        <label style="grid-column: 1 / -1;">
+            Variant Label
+            <input type="text" name="variant_label" value="{{ product.variant_label if product else '' }}" 
+                   placeholder="e.g., 054H Black High Yield">
+        </label>
+    </div>
+    
+    <div style="margin-top: 2rem; display: flex; gap: 0.5rem;">
+        <button type="submit">{% if is_new %}Create Product{% else %}Save Changes{% endif %}</button>
+        <a href="/admin/products" class="btn btn-secondary">Cancel</a>
+    </div>
+</form>
+{% endblock %}

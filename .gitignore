@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Environment and secrets
+.env
+ebay_tokens_*.json
+utils/base.py
+
+# Database journal files only (database.db is tracked for sync)
+*.db-journal
+*.sqlite3
+
+# Order history
+ebay_order_history.csv
+
+# Exports
+exports/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
+*.csv
+analyzer_downloads/
+
+# Personal notes
+Human Todo.md

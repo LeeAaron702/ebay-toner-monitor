@@ -1,0 +1,34 @@
+services:
+  proco-ebay-notifier:
+    build: .
+    container_name: proco-ebay-notifier
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - .:/app
+      - ~/.ssh:/root/.ssh:ro           # SSH keys for git push (read-only)
+      - ~/.gitconfig:/root/.gitconfig:ro  # Git config (read-only)
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "api.api_server:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  # Git sync service - runs 2x daily to sync database and changes
+  git-sync:
+    build: .
+    container_name: proco-git-sync
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GIT_AUTO_SYNC=true
+    volumes:
+      - .:/app
+      - ~/.ssh:/root/.ssh:ro           # SSH keys for git push
+      - ~/.gitconfig:/root/.gitconfig:ro  # Git config
+    depends_on:
+      - proco-ebay-notifier
+    command: ["python", "scripts/git_sync.py", "--daemon"]

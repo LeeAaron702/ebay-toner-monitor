@@ -1,0 +1,23 @@
+<div class="alert alert-success">
+    <h3>Import Complete</h3>
+    <ul style="margin: 0; padding-left: 1.25rem;">
+        <li>Total rows: {{ stats.total }}</li>
+        <li>Created: {{ stats.created }}</li>
+        <li>Updated: {{ stats.updated }}</li>
+        <li>Skipped: {{ stats.skipped }}</li>
+    </ul>
+    
+    {% if stats.errors %}
+    <h4 style="margin-top: 1rem;">Errors:</h4>
+    <ul class="error-list">
+        {% for err in stats.errors %}
+        <li>Row {{ err.row }}: {{ err.error }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</div>
+
+<div class="quick-actions mt-4">
+    <a href="/admin/products" class="btn">View Products</a>
+    <a href="/admin/products/upload" class="btn btn-secondary">Upload Another File</a>
+</div>

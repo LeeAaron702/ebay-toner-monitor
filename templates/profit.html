@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}Profit (Potential){% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Profit (Potential)</h1>
+    <p>Based on matches sent to Telegram. These represent potential profits if matches were purchased.</p>
+</div>
+
+<!-- Date Range Filter -->
+<form class="filters" method="GET" action="/admin/analytics/profit">
+    <label>
+        Start Date
+        <input type="date" name="start_date" value="{{ start_date }}">
+    </label>
+    <label>
+        End Date
+        <input type="date" name="end_date" value="{{ end_date }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+<!-- Summary Stats -->
+<div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="stat-card stat-card--primary">
+        <h3>Total Potential Profit</h3>
+        <div class="value">${{ "%.2f" | format(total_profit) }}</div>
+        <div class="subtext">{{ start_date }} to {{ end_date }}</div>
+    </div>
+    
+    <div class="stat-card">
+        <h3>Matches Found</h3>
+        <div class="value">{{ match_count }}</div>
+        <div class="subtext">Profitable listings</div>
+    </div>
+    
+    <div class="stat-card">
+        <h3>Avg Profit / Match</h3>
+        <div class="value">${{ "%.2f" | format(avg_profit) }}</div>
+    </div>
+</div>
+
+<!-- Profit Over Time Chart -->
+<div class="chart-container">
+    <h3>Daily Profit Potential</h3>
+    <canvas id="profitChart" height="80"></canvas>
+</div>
+
+<!-- Top Profitable ASINs -->
+<div class="section">
+    <div class="section-title">Top Profitable ASINs</div>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>ASIN</th>
+                    <th>Title</th>
+                    <th>Matches</th>
+                    <th>Total Profit</th>
+                    <th>Avg Profit</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in top_asins %}
+                <tr>
+                    <td>
+                        {% if item.asin %}
+                        <a href="https://amazon.com/dp/{{ item.asin }}" target="_blank" class="mono">
+                            {{ item.asin }}
+                        </a>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                        title="{{ item.title }}">
+                        {{ item.title or '-' }}
+                    </td>
+                    <td>{{ item.match_count }}</td>
+                    <td><strong>${{ "%.2f" | format(item.total_profit or 0) }}</strong></td>
+                    <td>${{ "%.2f" | format(item.avg_profit or 0) }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" style="text-align: center; padding: 2rem;">
+                        No matches found for the selected date range.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Grayscale chart configuration
+const profitCtx = document.getElementById('profitChart').getContext('2d');
+const profitChart = new Chart(profitCtx, {
+    type: 'line',
+    data: {
+        labels: [{% for d in daily_profit %}'{{ d.date }}'{% if not loop.last %}, {% endif %}{% endfor %}],
+        datasets: [{
+            label: 'Profit ($)',
+            data: [{% for d in daily_profit %}{{ d.daily_profit or 0 }}{% if not loop.last %}, {% endif %}{% endfor %}],
+            backgroundColor: 'rgba(0, 0, 0, 0.05)',
+            borderColor: '#171717',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1
+        }, {
+            label: 'Matches',
+            data: [{% for d in daily_profit %}{{ d.daily_matches or 0 }}{% if not loop.last %}, {% endif %}{% endfor %}],
+            backgroundColor: 'transparent',
+            borderColor: '#a3a3a3',
+            borderWidth: 1,
+            borderDash: [4, 4],
+            fill: false,
+            tension: 0.1,
+            yAxisID: 'y1'
+        }]
+    },
+    options: {
+        responsive: true,
+        interaction: {
+            mode: 'index',
+            intersect: false
+        },
+        scales: {
+            y: {
+                type: 'linear',
+                display: true,
+                position: 'left',
+                beginAtZero: true,
+                grid: { color: '#e5e5e5' },
+                ticks: {
+                    callback: function(value) {
+                        return '$' + value;
+                    }
+                }
+            },
+            y1: {
+                type: 'linear',
+                display: true,
+                position: 'right',
+                beginAtZero: true,
+                grid: { drawOnChartArea: false }
+            },
+            x: {
+                grid: { color: '#e5e5e5' }
+            }
+        },
+        plugins: {
+            legend: {
+                labels: { usePointStyle: true }
+            },
+            tooltip: {
+                callbacks: {
+                    label: function(context) {
+                        if (context.datasetIndex === 0) {
+                            return 'Profit: $' + context.raw.toFixed(2);
+                        }
+                        return 'Matches: ' + context.raw;
+                    }
+                }
+            }
+        }
+    }
+});
+</script>
+{% endblock %}

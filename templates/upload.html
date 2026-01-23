@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Bulk Upload{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Bulk Upload</h1>
+    <p>Upload a CSV file to create or update multiple products at once.</p>
+</div>
+
+<div class="mb-4">
+    <a href="/admin/products/template" class="btn btn-secondary btn-sm">Download CSV Template</a>
+</div>
+
+<div class="card">
+    <h3>Upload CSV File</h3>
+    <p class="text-sm text-muted">Columns: brand, model, part_number, color, capacity, pack_size, asin, amazon_sku, net_cost, bsr, variant_label</p>
+    
+    <form id="upload-form" 
+          hx-post="/admin/products/upload/preview" 
+          hx-target="#preview-area"
+          hx-encoding="multipart/form-data"
+          hx-indicator="#upload-spinner">
+        <input type="file" name="file" accept=".csv" required>
+        <button type="submit" style="margin-top: 1rem;">
+            Preview Upload
+            <span id="upload-spinner" class="htmx-indicator" aria-busy="true"></span>
+        </button>
+    </form>
+</div>
+
+<div id="preview-area" style="margin-top: 1.5rem;">
+    <!-- Preview will be inserted here -->
+</div>
+{% endblock %}

@@ -1,0 +1,1 @@
+Front end search function doesnt work without brand being selected

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Dashboard</h1>
+</div>
+
+<!-- Inventory Section -->
+<div class="section">
+    <div class="section-title">Inventory</div>
+    <div class="stats-grid">
+        <div class="stat-card stat-card--primary">
+            <h3>Total Products</h3>
+            <div class="value">{{ total_products }}</div>
+        </div>
+        
+        <div class="stat-card">
+            <h3>Canon</h3>
+            <div class="value">{{ canon_count }}</div>
+        </div>
+        
+        <div class="stat-card">
+            <h3>Xerox</h3>
+            <div class="value">{{ xerox_count }}</div>
+        </div>
+        
+        <div class="stat-card">
+            <h3>Lexmark</h3>
+            <div class="value">{{ lexmark_count }}</div>
+        </div>
+    </div>
+</div>
+
+<!-- Activity Section -->
+<div class="section">
+    <div class="section-title">Activity (Last 7 Days)</div>
+    <div class="stats-grid" style="grid-template-columns: repeat(2, 1fr);">
+        <div class="stat-card">
+            <h3>Matches Found</h3>
+            <div class="value">{{ recent_matches }}</div>
+            <div class="subtext">Profitable listings sent to Telegram</div>
+        </div>
+        
+        <div class="stat-card">
+            <h3>Orders</h3>
+            <div class="value">{{ recent_orders }}</div>
+            <div class="subtext">Unique eBay orders</div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="section">
+    <div class="section-title">Quick Actions</div>
+    <div class="quick-actions">
+        <a href="/admin/products/new" class="btn">Add Product</a>
+        <a href="/admin/products/upload" class="btn btn-secondary">Bulk Upload</a>
+        <a href="/admin/analytics/spending" class="btn btn-secondary">View Spending</a>
+        <a href="/admin/analytics/profit" class="btn btn-secondary">View Profit</a>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,60 @@
+<table>
+    <thead>
+        <tr>
+            <th>Brand</th>
+            <th>Model / Part #</th>
+            <th>Color</th>
+            <th>Capacity</th>
+            <th>Pack</th>
+            <th>ASIN</th>
+            <th>Net Cost</th>
+            <th>BSR</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for product in products %}
+        <tr>
+            <td>
+                <span class="badge badge-{{ product.brand }}">{{ product.brand | upper }}</span>
+            </td>
+            <td>
+                {% if product.model %}{{ product.model }}{% endif %}
+                {% if product.part_number %}<span class="text-muted text-sm">{{ product.part_number }}</span>{% endif %}
+            </td>
+            <td>{{ product.color or '-' }}</td>
+            <td>{{ product.capacity or '-' }}</td>
+            <td>{{ product.pack_size or 1 }}</td>
+            <td>
+                {% if product.asin %}
+                <a href="https://amazon.com/dp/{{ product.asin }}" target="_blank" class="mono">
+                    {{ product.asin }}
+                </a>
+                {% else %}
+                -
+                {% endif %}
+            </td>
+            <td>{% if product.net_cost %}${{ "%.2f" | format(product.net_cost) }}{% else %}-{% endif %}</td>
+            <td>{{ product.bsr | default('-', true) }}</td>
+            <td>
+                {% if product.sellable %}
+                <span class="badge badge-active">Active</span>
+                {% else %}
+                <span class="badge badge-inactive">Inactive</span>
+                {% endif %}
+            </td>
+            <td class="actions-cell">
+                <a href="/admin/products/{{ product.id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+                <button onclick="deleteProduct('{{ product.id }}')" class="btn btn-secondary btn-sm">Delete</button>
+            </td>
+        </tr>
+        {% else %}
+        <tr>
+            <td colspan="10" style="text-align: center; padding: 2rem;">
+                No products found.
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}Orders by Item{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Orders by Item</h1>
+    <p>Aggregated view grouped by item title</p>
+</div>
+
+<!-- Date Range Filter -->
+<form class="filters" method="GET" action="/admin/analytics/orders-by-item">
+    <label>
+        Start Date
+        <input type="date" name="start_date" value="{{ start_date }}">
+    </label>
+    <label>
+        End Date
+        <input type="date" name="end_date" value="{{ end_date }}">
+    </label>
+    <button type="submit">Apply</button>
+</form>
+
+<div class="table-container">
+    <table>
+        <thead>
+            <tr>
+                <th>Item Title</th>
+                <th>ASIN</th>
+                <th>Purchases</th>
+                <th>Units</th>
+                <th>Avg Price</th>
+                <th>Total Spent</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;" 
+                    title="{{ item.item_title }}">
+                    {{ item.item_title or 'Unknown' }}
+                </td>
+                <td>
+                    {% if item.asin %}
+                    <a href="https://amazon.com/dp/{{ item.asin }}" target="_blank" class="mono">
+                        {{ item.asin }}
+                    </a>
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>{{ item.times_purchased }}</td>
+                <td>{{ item.total_units | int }}</td>
+                <td>${{ "%.2f" | format(item.avg_price) }}</td>
+                <td><strong>${{ "%.2f" | format(item.total_spent) }}</strong></td>
+                <td>
+                    <button class="btn btn-secondary btn-sm" 
+                            hx-get="/admin/analytics/orders-by-item/{{ item.item_title | urlencode }}?start_date={{ start_date }}&end_date={{ end_date }}"
+                            hx-target="#item-orders-{{ loop.index }}"
+                            hx-swap="innerHTML">
+                        Expand
+                    </button>
+                </td>
+            </tr>
+            <tr id="item-orders-{{ loop.index }}" style="display: none;">
+                <!-- Individual orders will be loaded here -->
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="7" style="text-align: center; padding: 2rem;">
+                    No orders found for the selected date range.
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+// Show the expansion row when content is loaded
+document.body.addEventListener('htmx:afterSwap', function(evt) {
+    if (evt.target.id.startsWith('item-orders-')) {
+        evt.target.style.display = 'table-row';
+    }
+});
+</script>
+{% endblock %}

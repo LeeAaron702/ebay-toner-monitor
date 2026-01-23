@@ -1,0 +1,84 @@
+<div class="card">
+    <h3>Preview: {{ total }} rows</h3>
+    
+    {% if error_count > 0 %}
+    <div class="alert alert-error">
+        {{ error_count }} rows have errors. Please fix and re-upload.
+    </div>
+    {% else %}
+    <div class="alert alert-success">
+        All rows valid. Ready to import.
+    </div>
+    {% endif %}
+    
+    <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Row</th>
+                    <th>Brand</th>
+                    <th>Model</th>
+                    <th>Part #</th>
+                    <th>Color</th>
+                    <th>ASIN</th>
+                    <th>Net Cost</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr class="{% if row._errors %}has-errors{% endif %}">
+                    <td>{{ row._row_num }}</td>
+                    <td>{{ row.brand }}</td>
+                    <td>{{ row.model or '-' }}</td>
+                    <td>{{ row.part_number or '-' }}</td>
+                    <td>{{ row.color or '-' }}</td>
+                    <td>{{ row.asin or '-' }}</td>
+                    <td>{{ row.net_cost or '-' }}</td>
+                    <td>
+                        {% if row._errors %}
+                        <ul class="error-list">
+                            {% for err in row._errors %}
+                            <li>{{ err }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        OK
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    
+    {% if error_count == 0 %}
+    <form id="confirm-form"
+          hx-post="/admin/products/upload/confirm"
+          hx-target="#preview-area"
+          hx-encoding="multipart/form-data"
+          hx-indicator="#confirm-spinner"
+          style="margin-top: 1rem;">
+        <input type="file" name="file" id="confirm-file" accept=".csv" required style="display: none;">
+        <button type="button" onclick="confirmUpload()">
+            Confirm Import
+            <span id="confirm-spinner" class="htmx-indicator" aria-busy="true"></span>
+        </button>
+        <a href="/admin/products/upload" class="btn btn-secondary">Cancel</a>
+    </form>
+    
+    <script>
+        function confirmUpload() {
+            const previewInput = document.querySelector('#upload-form input[type="file"]');
+            const confirmInput = document.getElementById('confirm-file');
+            
+            if (previewInput.files.length > 0) {
+                const dt = new DataTransfer();
+                dt.items.add(previewInput.files[0]);
+                confirmInput.files = dt.files;
+                htmx.trigger('#confirm-form', 'submit');
+            }
+        }
+    </script>
+    {% endif %}
+</div>
