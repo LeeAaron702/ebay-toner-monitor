@@ -141,9 +141,23 @@ Optional:
 - `EXCLUDE_API_KEY` — Auth for /exclude/* endpoints
 - `OLLAMA_BASE_URL` — AI description parsing
 
+## Terminal Usage
+
+**IMPORTANT:** Always activate the virtual environment before running any Python commands in the terminal:
+
+```bash
+# Activate virtual environment first (REQUIRED before any Python commands)
+source venv/bin/activate
+```
+
+This ensures all dependencies are available and the correct Python version is used.
+
 ## Common Commands
 
 ```bash
+# Activate venv first (always do this before running commands below)
+source venv/bin/activate
+
 # Run locally
 uvicorn api.api_server:app --host 0.0.0.0 --port 8000 --reload
 
