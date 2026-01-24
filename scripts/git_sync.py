@@ -146,21 +146,12 @@ def force_track_files():
 def pull_changes() -> tuple[bool, str]:
     """
     Pull latest changes from remote.
-    PRESERVES local database.db - never overwrites it from remote.
+    For database conflicts, keeps LOCAL version (ours) since we commit first.
     
     Returns:
         (success: bool, message: str)
     """
     _log(f"Pulling from {GIT_REMOTE}/{GIT_BRANCH}...")
-    
-    # CRITICAL: Backup local database before any git operations
-    db_path = REPO_PATH / "database.db"
-    db_backup_path = REPO_PATH / "database.db.local_backup"
-    
-    if db_path.exists():
-        import shutil
-        shutil.copy2(db_path, db_backup_path)
-        _log(f"Backed up local database.db")
     
     # Fetch first to see what's available
     fetch_result = run_git_command(["fetch", GIT_REMOTE, GIT_BRANCH], check=False)
@@ -173,43 +164,46 @@ def pull_changes() -> tuple[bool, str]:
     
     if commits_behind == 0:
         _log("Already up to date.")
-        # Remove backup since no changes
-        if db_backup_path.exists():
-            db_backup_path.unlink()
         return True, "Already up to date"
     
     _log(f"Behind by {commits_behind} commit(s), pulling...")
     
-    # Try to pull with rebase to keep history clean
-    pull_result = run_git_command(["pull", "--rebase", GIT_REMOTE, GIT_BRANCH], check=False)
+    # Pull with strategy to handle conflicts
+    # Use "ours" strategy for database since we committed our changes first
+    pull_result = run_git_command(["pull", "--no-rebase", GIT_REMOTE, GIT_BRANCH], check=False)
     
     if pull_result.returncode != 0:
-        # If rebase fails, try regular merge
-        _log("Rebase failed, trying merge...")
-        run_git_command(["rebase", "--abort"], check=False)
+        # Check for merge conflicts
+        if "CONFLICT" in pull_result.stdout or "conflict" in pull_result.stderr.lower():
+            _log("Merge conflict detected, resolving...")
+            
+            # For database.db, keep OUR version (we committed first, so ours has our changes)
+            for db_file in ["database.db"]:
+                db_path = REPO_PATH / db_file
+                if db_path.exists():
+                    run_git_command(["checkout", "--ours", db_file], check=False)
+                    run_git_command(["add", db_file], check=False)
+                    _log(f"Kept local version of {db_file}")
+            
+            # For code files, prefer remote (theirs) to get latest code updates
+            # Get list of conflicted files
+            status_result = run_git_command(["diff", "--name-only", "--diff-filter=U"], check=False)
+            conflicted_files = status_result.stdout.strip().split('\n') if status_result.stdout.strip() else []
+            
+            for f in conflicted_files:
+                if f and f != "database.db":
+                    run_git_command(["checkout", "--theirs", f], check=False)
+                    run_git_command(["add", f], check=False)
+                    _log(f"Kept remote version of {f}")
+            
+            # Complete the merge
+            run_git_command(["commit", "-m", f"Auto-merge from {MACHINE_ID}: kept local database, remote code"], check=False)
+            
+            return True, f"Pulled {commits_behind} commit(s), resolved conflicts"
         
-        pull_result = run_git_command(["pull", GIT_REMOTE, GIT_BRANCH], check=False)
-        
-        if pull_result.returncode != 0:
-            # Check for merge conflicts
-            if "CONFLICT" in pull_result.stdout or "conflict" in pull_result.stderr.lower():
-                _log("Merge conflict detected, resolving...")
-                
-                # For all files, keep remote version (theirs) 
-                run_git_command(["checkout", "--theirs", "."], check=False)
-                
-                # Continue the merge
-                run_git_command(["add", "-A"], check=False)
-                run_git_command(["commit", "-m", f"Auto-merge conflict resolution from {MACHINE_ID}"], check=False)
+        return False, f"Pull failed: {pull_result.stderr}"
     
-    # CRITICAL: Always restore local database after pull
-    if db_backup_path.exists():
-        import shutil
-        shutil.copy2(db_backup_path, db_path)
-        db_backup_path.unlink()
-        _log(f"Restored local database.db (preserved local changes)")
-    
-    return True, f"Pulled {commits_behind} commit(s), preserved local database"
+    return True, f"Pulled {commits_behind} commit(s)"
 
 
 def commit_changes() -> tuple[bool, str]:
@@ -271,7 +265,14 @@ def push_changes() -> tuple[bool, str]:
 
 def sync() -> dict:
     """
-    Main sync function: pull -> commit -> push
+    Main sync function: COMMIT -> PULL -> PUSH
+    
+    Order is critical:
+    1. Commit local changes first (so they're in git history)
+    2. Pull remote changes (conflicts resolved keeping our database)
+    3. Push our commits to remote
+    
+    This ensures local database changes are never lost during pull.
     
     Returns:
         dict with sync status and messages
@@ -284,8 +285,8 @@ def sync() -> dict:
         "success": False,
         "machine_id": MACHINE_ID,
         "timestamp": datetime.now().isoformat(),
-        "pull": None,
         "commit": None,
+        "pull": None,
         "push": None,
         "error": None
     }
@@ -304,8 +305,14 @@ def sync() -> dict:
     # Configure git user
     configure_git_user()
     
-    # Step 1: Pull latest changes
     max_retries = 3
+    
+    # Step 1: COMMIT local changes first (critical - protects local db from being overwritten)
+    commit_success, commit_msg = commit_changes()
+    result["commit"] = commit_msg
+    _log(f"Commit result: {commit_msg}")
+    
+    # Step 2: PULL latest changes (after committing, so we can resolve conflicts properly)
     for attempt in range(max_retries):
         pull_success, pull_msg = pull_changes()
         result["pull"] = pull_msg
@@ -319,27 +326,17 @@ def sync() -> dict:
             _log(f"ERROR: {result['error']}")
             return result
     
-    # Step 2: Commit local changes
-    commit_success, commit_msg = commit_changes()
-    result["commit"] = commit_msg
-    
-    if not commit_success:
-        result["error"] = f"Commit failed: {commit_msg}"
-        _log(f"ERROR: {result['error']}")
-        return result
-    
-    # Step 3: Push changes (with retry loop for concurrent pushes)
+    # Step 3: PUSH changes (with retry loop for concurrent pushes)
     for attempt in range(max_retries):
         push_success, push_msg = push_changes()
         result["push"] = push_msg
         
         if push_success:
             break
-        elif "need to pull" in push_msg:
-            # Another machine pushed, pull and try again
-            _log("Another machine pushed, pulling and retrying...")
+        elif "need to pull" in push_msg.lower() or "rejected" in push_msg.lower():
+            # Another machine pushed while we were syncing, pull and try again
+            _log("Remote has new commits, pulling and retrying push...")
             pull_changes()
-            commit_changes()
         elif attempt < max_retries - 1:
             _log(f"Push attempt {attempt + 1} failed, retrying...")
         else:
