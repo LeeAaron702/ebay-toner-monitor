@@ -9,30 +9,6 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - .:/app
-      - ~/.ssh:/root/.ssh:ro
-      - ~/.gitconfig:/root/.gitconfig:ro
     ports:
       - "8000:8000"
     command: ["uvicorn", "api.api_server:app", "--host", "0.0.0.0", "--port", "8000"]
-
-  # Git auto-pull service - FOR SERVERS ONLY
-  # Automatically pulls latest changes every hour
-  # On dev machines, use ./sync.sh instead and don't run this service
-  git-sync:
-    build: .
-    container_name: proco-git-sync
-    restart: unless-stopped
-    profiles: ["server"]  # Only runs when: docker compose --profile server up
-    env_file:
-      - .env
-    environment:
-      - PYTHONUNBUFFERED=1
-      - GIT_AUTO_SYNC=true
-      - GIT_SYNC_INTERVAL=3600  # Pull every hour
-    volumes:
-      - .:/app
-      - ~/.ssh:/root/.ssh:ro
-      - ~/.gitconfig:/root/.gitconfig:ro
-    depends_on:
-      - proco-ebay-notifier
-    command: ["python", "scripts/git_sync.py", "--daemon"]
