@@ -146,11 +146,21 @@ def force_track_files():
 def pull_changes() -> tuple[bool, str]:
     """
     Pull latest changes from remote.
+    PRESERVES local database.db - never overwrites it from remote.
     
     Returns:
         (success: bool, message: str)
     """
     _log(f"Pulling from {GIT_REMOTE}/{GIT_BRANCH}...")
+    
+    # CRITICAL: Backup local database before any git operations
+    db_path = REPO_PATH / "database.db"
+    db_backup_path = REPO_PATH / "database.db.local_backup"
+    
+    if db_path.exists():
+        import shutil
+        shutil.copy2(db_path, db_backup_path)
+        _log(f"Backed up local database.db")
     
     # Fetch first to see what's available
     fetch_result = run_git_command(["fetch", GIT_REMOTE, GIT_BRANCH], check=False)
@@ -163,6 +173,9 @@ def pull_changes() -> tuple[bool, str]:
     
     if commits_behind == 0:
         _log("Already up to date.")
+        # Remove backup since no changes
+        if db_backup_path.exists():
+            db_backup_path.unlink()
         return True, "Already up to date"
     
     _log(f"Behind by {commits_behind} commit(s), pulling...")
@@ -180,27 +193,23 @@ def pull_changes() -> tuple[bool, str]:
         if pull_result.returncode != 0:
             # Check for merge conflicts
             if "CONFLICT" in pull_result.stdout or "conflict" in pull_result.stderr.lower():
-                _log("Merge conflict detected, resolving by keeping remote for code, local for database...")
+                _log("Merge conflict detected, resolving...")
                 
-                # For database, keep local version (ours)
-                for db_file in ["database.db"]:
-                    db_path = REPO_PATH / db_file
-                    if db_path.exists():
-                        run_git_command(["checkout", "--ours", db_file], check=False)
-                        run_git_command(["add", db_file], check=False)
-                
-                # For other files, keep remote version (theirs) 
+                # For all files, keep remote version (theirs) 
                 run_git_command(["checkout", "--theirs", "."], check=False)
                 
                 # Continue the merge
                 run_git_command(["add", "-A"], check=False)
                 run_git_command(["commit", "-m", f"Auto-merge conflict resolution from {MACHINE_ID}"], check=False)
-                
-                return True, "Resolved merge conflicts"
-            
-            return False, f"Pull failed: {pull_result.stderr}"
     
-    return True, f"Pulled {commits_behind} commit(s)"
+    # CRITICAL: Always restore local database after pull
+    if db_backup_path.exists():
+        import shutil
+        shutil.copy2(db_backup_path, db_path)
+        db_backup_path.unlink()
+        _log(f"Restored local database.db (preserved local changes)")
+    
+    return True, f"Pulled {commits_behind} commit(s), preserved local database"
 
 
 def commit_changes() -> tuple[bool, str]:
