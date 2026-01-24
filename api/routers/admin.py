@@ -387,13 +387,13 @@ async def download_csv_template(user: str = Depends(require_auth)):
     
     # Headers
     headers = ["brand", "model", "part_number", "color", "capacity", "pack_size", 
-               "asin", "amazon_sku", "net_cost", "bsr", "variant_label"]
+               "asin", "amazon_sku", "net_cost", "bsr", "variant_label", "sellable", "notes"]
     writer.writerow(headers)
     
     # Example rows
-    writer.writerow(["canon", "054H", "", "Black", "High", "1", "B07XYZ1234", "SKU-001", "45.99", "5000", "054H Black High Yield"])
-    writer.writerow(["xerox", "", "006R01512", "Cyan", "Standard", "1", "B08ABC5678", "SKU-002", "89.99", "8000", "WorkCentre Cyan"])
-    writer.writerow(["lexmark", "20N1", "20N1H10", "Black", "High", "2", "B09DEF9012", "SKU-003", "129.99", "12000", "20N1 Black High 2-Pack"])
+    writer.writerow(["canon", "054H", "", "Black", "High", "1", "B07XYZ1234", "SKU-001", "45.99", "5000", "054H Black High Yield", "1", ""])
+    writer.writerow(["xerox", "", "006R01512", "Cyan", "Standard", "1", "B08ABC5678", "SKU-002", "89.99", "8000", "WorkCentre Cyan", "1", ""])
+    writer.writerow(["lexmark", "20N1", "20N1H10", "Black", "High", "2", "B09DEF9012", "SKU-003", "129.99", "12000", "20N1 Black High 2-Pack", "0", "Low margin"])
     
     output.seek(0)
     return StreamingResponse(
@@ -462,6 +462,16 @@ async def preview_upload(
         except ValueError:
             row_errors.append("Invalid bsr")
         
+        # Convert sellable to int (accepts 0/1, true/false, yes/no)
+        try:
+            sellable_val = row_data.get('sellable', '1').strip().lower()
+            if sellable_val in ('0', 'false', 'no', 'n'):
+                row_data['sellable'] = 0
+            else:
+                row_data['sellable'] = 1
+        except (ValueError, AttributeError):
+            row_data['sellable'] = 1
+        
         row_data['_row_num'] = i + 2  # +2 for header row and 0-index
         row_data['_errors'] = row_errors
         rows.append(row_data)
@@ -495,6 +505,10 @@ async def confirm_upload(
     products = []
     
     for row in reader:
+        # Parse sellable (accepts 0/1, true/false, yes/no)
+        sellable_val = row.get('sellable', '1').strip().lower() if row.get('sellable') else '1'
+        sellable = sellable_val not in ('0', 'false', 'no', 'n')
+        
         product = {
             'brand': row.get('brand', '').lower(),
             'model': row.get('model') or None,
@@ -507,6 +521,8 @@ async def confirm_upload(
             'net_cost': float(row.get('net_cost')) if row.get('net_cost') else None,
             'bsr': int(row.get('bsr')) if row.get('bsr') else None,
             'variant_label': row.get('variant_label') or None,
+            'sellable': sellable,
+            'notes': row.get('notes') or None,
         }
         products.append(product)
     

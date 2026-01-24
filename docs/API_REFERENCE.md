@@ -110,6 +110,10 @@ Content-Type: multipart/form-data
 *Lexmark:*
 - brand, part_number, variant_label, color, capacity, pack_size, asin, net_cost
 
+**Optional Columns (all brands):**
+- `sellable`: 0/1, true/false, yes/no (default: 1) - Controls whether product is included in monitoring
+- `notes`: Free text notes displayed in Telegram alerts
+
 **Response:**
 ```json
 {
