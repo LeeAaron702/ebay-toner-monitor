@@ -558,10 +558,11 @@
                     <li><a href="/admin/exclusions" {% if '/exclusions' in request.url.path %}class="active"{% endif %}>Exclusions</a></li>
                     
                     <div class="section-label">Analytics</div>
-                    <li><a href="/admin/analytics/orders" {% if '/orders' in request.url.path and '/by-item' not in request.url.path %}class="active"{% endif %}>Order History</a></li>
+                    <li><a href="/admin/analytics/orders" {% if '/orders' in request.url.path and '/by-item' not in request.url.path %}class="active"{% endif %}>Orders & Spending</a></li>
                     <li><a href="/admin/analytics/orders-by-item" {% if '/orders-by-item' in request.url.path %}class="active"{% endif %}>Orders by Item</a></li>
-                    <li><a href="/admin/analytics/spending" {% if '/spending' in request.url.path %}class="active"{% endif %}>Spending</a></li>
-                    <li><a href="/admin/analytics/profit" {% if '/profit' in request.url.path %}class="active"{% endif %}>Profit</a></li>
+                    
+                    <div class="section-label">System</div>
+                    <li><a href="/admin/settings" {% if '/settings' in request.url.path %}class="active"{% endif %}>Settings</a></li>
                 </ul>
             </nav>
             <div class="user-menu">

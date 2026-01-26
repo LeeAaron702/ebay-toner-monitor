@@ -112,7 +112,8 @@ CREATE TABLE products (
     pack_size INTEGER DEFAULT 1,
     asin TEXT,                  -- Amazon ASIN
     amazon_sku TEXT,            -- Internal SKU
-    net_cost REAL,              -- Target purchase price
+    net_cost REAL,              -- Seller Proceeds from Amazon (before overhead)
+    amazon_price REAL,          -- Amazon buybox price (for overhead calculation)
     bsr INTEGER,                -- Best Seller Rank
     sellable INTEGER DEFAULT 1,
     notes TEXT,                 -- User annotations (shown in Telegram)
@@ -120,6 +121,28 @@ CREATE TABLE products (
     UNIQUE(brand, asin)
 );
 ```
+
+## Settings Table
+
+```sql
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT
+);
+-- Key: 'overhead_pct' (default: 15.0)
+```
+
+## Profit Calculation
+
+Engines apply overhead deduction at runtime:
+```
+effective_net = net_cost - (amazon_price × overhead_pct / 100)
+profit = effective_net - ebay_total
+```
+
+Overhead covers: inbound shipping, returns, packaging, safety margin.
+Configurable via Admin Panel → Settings.
 
 ## Telegram Integration
 

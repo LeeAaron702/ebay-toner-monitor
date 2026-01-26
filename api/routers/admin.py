@@ -4,7 +4,7 @@ FastAPI router for the Admin Panel.
 
 Serves HTML pages for:
 - Product Management (CRUD, bulk upload)
-- Analytics Dashboard (order history, spending, profit metrics)
+- Analytics Dashboard (order history, spending)
 
 Uses Jinja2 templates + HTMX for interactivity.
 Session cookie authentication for single admin user.
@@ -36,6 +36,10 @@ from db.products_db import (
     delete_product,
     bulk_upsert_products,
     VALID_BRANDS,
+    get_overhead_pct,
+    set_overhead_pct,
+    get_all_settings,
+    DEFAULT_OVERHEAD_PCT,
 )
 from db.listings_db import get_db_connection
 from db.exclusions_db import (
@@ -553,10 +557,11 @@ async def orders_page(
     user: str = Depends(require_auth),
     start_date: str = None,
     end_date: str = None,
+    account: str = None,
     page: int = 1,
     per_page: int = 50
 ):
-    """Order history page."""
+    """Order history and spending metrics page."""
     if not start_date:
         start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
     if not end_date:
@@ -567,22 +572,136 @@ async def orders_page(
     conn = get_db_connection()
     conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
     try:
-        cursor = conn.execute("""
-            SELECT order_id, created_time, item_title, quantity_purchased, 
-                   transaction_price, seller_user_id, order_total
-            FROM order_history
-            WHERE created_time >= ? AND created_time <= ?
-            ORDER BY created_time DESC
-            LIMIT ? OFFSET ?
-        """, (start_date, end_date + ' 23:59:59', per_page, offset))
+        # Get list of accounts for filter dropdown
+        cursor = conn.execute("SELECT DISTINCT account_label FROM order_history WHERE account_label IS NOT NULL AND account_label != '' ORDER BY account_label")
+        accounts = [row['account_label'] for row in cursor.fetchall()]
+        
+        # Build account filter clause
+        account_filter = ""
+        params_base = [start_date, end_date + ' 23:59:59']
+        if account and account != 'all':
+            account_filter = " AND account_label = ?"
+            params_base = [start_date, end_date + ' 23:59:59', account]
+        
+        # Orders list with account filter
+        if account and account != 'all':
+            cursor = conn.execute("""
+                SELECT order_id, transaction_id, created_time, item_title, quantity_purchased, 
+                       transaction_price, seller_user_id, order_total, account_label
+                FROM order_history
+                WHERE created_time >= ? AND created_time <= ? AND account_label = ?
+                ORDER BY created_time DESC
+                LIMIT ? OFFSET ?
+            """, (start_date, end_date + ' 23:59:59', account, per_page, offset))
+        else:
+            cursor = conn.execute("""
+                SELECT order_id, transaction_id, created_time, item_title, quantity_purchased, 
+                       transaction_price, seller_user_id, order_total, account_label
+                FROM order_history
+                WHERE created_time >= ? AND created_time <= ?
+                ORDER BY created_time DESC
+                LIMIT ? OFFSET ?
+            """, (start_date, end_date + ' 23:59:59', per_page, offset))
         orders = cursor.fetchall()
         
-        # Get total count
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM order_history
-            WHERE created_time >= ? AND created_time <= ?
-        """, (start_date, end_date + ' 23:59:59'))
+        # Get total count for pagination
+        if account and account != 'all':
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM order_history
+                WHERE created_time >= ? AND created_time <= ? AND account_label = ?
+            """, (start_date, end_date + ' 23:59:59', account))
+        else:
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM order_history
+                WHERE created_time >= ? AND created_time <= ?
+            """, (start_date, end_date + ' 23:59:59'))
         total = cursor.fetchone()['COUNT(*)']
+        
+        # Total spent and order count (deduplicated by order_id)
+        cursor = conn.execute(f"""
+            SELECT 
+                COUNT(DISTINCT order_id) as order_count,
+                SUM(CAST(order_total AS REAL)) as total_spent
+            FROM (
+                SELECT order_id, order_total,
+                       ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
+                FROM order_history
+                WHERE created_time >= ? AND created_time <= ?{account_filter}
+            )
+            WHERE rn = 1
+        """, params_base)
+        totals = cursor.fetchone()
+        
+        total_spent = totals['total_spent'] or 0
+        order_count = totals['order_count'] or 0
+        avg_order_value = total_spent / order_count if order_count > 0 else 0
+        
+        # Daily spending for chart
+        cursor = conn.execute(f"""
+            SELECT 
+                DATE(REPLACE(created_time, ' PST', '')) as date,
+                SUM(CAST(order_total AS REAL)) as daily_spent
+            FROM (
+                SELECT order_id, order_total, created_time,
+                       ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
+                FROM order_history
+                WHERE created_time >= ? AND created_time <= ?{account_filter}
+            )
+            WHERE rn = 1
+            GROUP BY DATE(REPLACE(created_time, ' PST', ''))
+            ORDER BY date
+        """, params_base)
+        daily_spending = cursor.fetchall()
+        
+        # Spending by brand (based on item_title keywords) - deduplicated by order
+        cursor = conn.execute(f"""
+            SELECT 
+                CASE 
+                    WHEN LOWER(item_title) LIKE '%canon%' THEN 'Canon'
+                    WHEN LOWER(item_title) LIKE '%xerox%' THEN 'Xerox'
+                    WHEN LOWER(item_title) LIKE '%lexmark%' THEN 'Lexmark'
+                    ELSE 'Other'
+                END as brand,
+                SUM(CAST(order_total AS REAL)) as spent
+            FROM (
+                SELECT order_id, order_total, item_title,
+                       ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
+                FROM order_history
+                WHERE created_time >= ? AND created_time <= ?{account_filter}
+            )
+            WHERE rn = 1
+            GROUP BY brand
+            ORDER BY spent DESC
+        """, params_base)
+        brand_spending = cursor.fetchall()
+        
+        # Account comparison (only when viewing all accounts)
+        account_comparison = []
+        if not account or account == 'all':
+            cursor = conn.execute("""
+                SELECT 
+                    account_label as account,
+                    COUNT(DISTINCT order_id) as order_count,
+                    SUM(CAST(order_total AS REAL)) as total_spent
+                FROM (
+                    SELECT account_label, order_id, order_total,
+                           ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
+                    FROM order_history
+                    WHERE created_time >= ? AND created_time <= ?
+                      AND account_label IS NOT NULL AND account_label != ''
+                )
+                WHERE rn = 1
+                GROUP BY account_label
+                ORDER BY total_spent DESC
+            """, (start_date, end_date + ' 23:59:59'))
+            rows = cursor.fetchall()
+            for row in rows:
+                account_comparison.append({
+                    'account': row['account'],
+                    'order_count': row['order_count'],
+                    'total_spent': row['total_spent'] or 0,
+                    'avg_order': (row['total_spent'] or 0) / row['order_count'] if row['order_count'] > 0 else 0
+                })
     finally:
         conn.close()
     
@@ -602,9 +721,17 @@ async def orders_page(
         "orders": orders,
         "start_date": start_date,
         "end_date": end_date,
+        "account": account or "all",
+        "accounts": accounts,
         "page": page,
         "total_pages": total_pages,
         "total": total,
+        "total_spent": total_spent,
+        "order_count": order_count,
+        "avg_order_value": avg_order_value,
+        "daily_spending": daily_spending,
+        "brand_spending": brand_spending,
+        "account_comparison": account_comparison,
     })
 
 
@@ -726,215 +853,80 @@ async def orders_for_item(
     })
 
 
-@router.get("/analytics/spending", response_class=HTMLResponse)
-async def spending_page(
+@router.get("/api/order-matches/{order_id}/{transaction_id}", response_class=HTMLResponse)
+async def get_order_matches(
     request: Request,
-    user: str = Depends(require_auth),
-    start_date: str = None,
-    end_date: str = None,
-    account: str = None
+    order_id: str,
+    transaction_id: str,
+    user: str = Depends(require_auth)
 ):
-    """Spending metrics page."""
-    if not start_date:
-        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-    if not end_date:
-        end_date = datetime.now().strftime('%Y-%m-%d')
+    """Get matched products for an order (HTMX endpoint)."""
+    from urllib.parse import unquote
+    order_id = unquote(order_id)
+    transaction_id = unquote(transaction_id)
     
     conn = get_db_connection()
     conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
     try:
-        # Get list of accounts for filter dropdown
-        cursor = conn.execute("SELECT DISTINCT account_label FROM order_history WHERE account_label IS NOT NULL AND account_label != '' ORDER BY account_label")
-        accounts = [row['account_label'] for row in cursor.fetchall()]
+        # Get overhead setting
+        cursor = conn.execute("SELECT value FROM settings WHERE key = 'overhead_pct'")
+        row = cursor.fetchone()
+        overhead_pct = float(row['value']) if row else 15.0
         
-        # Build account filter clause
-        account_filter = ""
-        params_base = [start_date, end_date + ' 23:59:59']
-        if account and account != 'all':
-            account_filter = " AND account_label = ?"
-            params_base = [start_date, end_date + ' 23:59:59', account]
-        
-        # Total spent and order count
-        cursor = conn.execute(f"""
+        # Get purchased_units breakdown with product details
+        # Each match_index represents one color, so we want all of them
+        cursor = conn.execute("""
             SELECT 
-                COUNT(DISTINCT order_id) as order_count,
-                SUM(CAST(order_total AS REAL)) as total_spent
-            FROM (
-                SELECT order_id, order_total,
-                       ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
-                FROM order_history
-                WHERE created_time >= ? AND created_time <= ?{account_filter}
-            )
-            WHERE rn = 1
-        """, params_base)
-        totals = cursor.fetchone()
+                pu.model, pu.capacity, pu.color, pu.quantity, pu.unit_cost, 
+                pu.asin, pu.net_per_unit,
+                p.amazon_price, p.net_cost as product_net_cost, p.pack_size as product_pack_size
+            FROM purchased_units pu
+            LEFT JOIN products p ON pu.asin = p.asin
+            WHERE pu.order_id = ? AND pu.transaction_id = ?
+            ORDER BY pu.color
+        """, (order_id, transaction_id))
+        raw_units = cursor.fetchall()
         
-        total_spent = totals['total_spent'] or 0
-        order_count = totals['order_count'] or 0
-        avg_order_value = total_spent / order_count if order_count > 0 else 0
-        
-        # Daily spending for chart
-        cursor = conn.execute(f"""
-            SELECT 
-                DATE(REPLACE(created_time, ' PST', '')) as date,
-                SUM(CAST(order_total AS REAL)) as daily_spent
-            FROM (
-                SELECT order_id, order_total, created_time,
-                       ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
-                FROM order_history
-                WHERE created_time >= ? AND created_time <= ?{account_filter}
-            )
-            WHERE rn = 1
-            GROUP BY DATE(REPLACE(created_time, ' PST', ''))
-            ORDER BY date
-        """, params_base)
-        daily_spending = cursor.fetchall()
-        
-        # Spending by brand (based on item_title keywords) - deduplicated by order
-        cursor = conn.execute(f"""
-            SELECT 
-                CASE 
-                    WHEN LOWER(item_title) LIKE '%canon%' THEN 'Canon'
-                    WHEN LOWER(item_title) LIKE '%xerox%' THEN 'Xerox'
-                    WHEN LOWER(item_title) LIKE '%lexmark%' THEN 'Lexmark'
-                    ELSE 'Other'
-                END as brand,
-                SUM(CAST(order_total AS REAL)) as spent
-            FROM (
-                SELECT order_id, order_total, item_title,
-                       ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
-                FROM order_history
-                WHERE created_time >= ? AND created_time <= ?{account_filter}
-            )
-            WHERE rn = 1
-            GROUP BY brand
-            ORDER BY spent DESC
-        """, params_base)
-        brand_spending = cursor.fetchall()
-        
-        # Account comparison (only when viewing all accounts)
-        account_comparison = []
-        if not account or account == 'all':
-            cursor = conn.execute("""
-                SELECT 
-                    account_label as account,
-                    COUNT(DISTINCT order_id) as order_count,
-                    SUM(CAST(order_total AS REAL)) as total_spent
-                FROM (
-                    SELECT account_label, order_id, order_total,
-                           ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY transaction_id) as rn
-                    FROM order_history
-                    WHERE created_time >= ? AND created_time <= ?
-                      AND account_label IS NOT NULL AND account_label != ''
-                )
-                WHERE rn = 1
-                GROUP BY account_label
-                ORDER BY total_spent DESC
-            """, (start_date, end_date + ' 23:59:59'))
-            rows = cursor.fetchall()
-            for row in rows:
-                account_comparison.append({
-                    'account': row['account'],
-                    'order_count': row['order_count'],
-                    'total_spent': row['total_spent'] or 0,
-                    'avg_order': (row['total_spent'] or 0) / row['order_count'] if row['order_count'] > 0 else 0
-                })
+        # Calculate values for each unit
+        units = []
+        for unit in raw_units:
+            amazon_price = unit.get('amazon_price') or 0
+            product_net_cost = unit.get('product_net_cost') or 0
+            product_pack_size = unit.get('product_pack_size') or 1
+            if product_pack_size < 1:
+                product_pack_size = 1
+            
+            # CRITICAL: Divide product values by pack_size to get per-unit values
+            # A 2-pack ASIN with $306 total net cost = $153/unit
+            amazon_price_per_unit = amazon_price / product_pack_size
+            seller_proceeds_per_unit = product_net_cost / product_pack_size if product_net_cost else (unit.get('net_per_unit') or 0)
+            
+            overhead_amount = amazon_price_per_unit * (overhead_pct / 100) if amazon_price_per_unit else 0
+            net_after_overhead = seller_proceeds_per_unit - overhead_amount if seller_proceeds_per_unit else 0
+            unit_cost = unit.get('unit_cost') or 0
+            profit = net_after_overhead - unit_cost if net_after_overhead and unit_cost else 0
+            
+            units.append({
+                'model': unit.get('model'),
+                'capacity': unit.get('capacity'),
+                'color': unit.get('color'),
+                'quantity': unit.get('quantity') or 1,
+                'asin': unit.get('asin'),
+                'unit_cost': unit_cost,
+                'amazon_price': amazon_price_per_unit,
+                'seller_proceeds': seller_proceeds_per_unit,
+                'overhead_pct': overhead_pct,
+                'net_after_overhead': net_after_overhead,
+                'profit': profit,
+            })
     finally:
         conn.close()
     
-    return templates.TemplateResponse("spending.html", {
+    return templates.TemplateResponse("partials/order_matches.html", {
         "request": request,
-        "user": user,
-        "start_date": start_date,
-        "end_date": end_date,
-        "account": account or "all",
-        "accounts": accounts,
-        "total_spent": total_spent,
-        "order_count": order_count,
-        "avg_order_value": avg_order_value,
-        "daily_spending": daily_spending,
-        "brand_spending": brand_spending,
-        "account_comparison": account_comparison,
-    })
-
-
-@router.get("/analytics/profit", response_class=HTMLResponse)
-async def profit_page(
-    request: Request,
-    user: str = Depends(require_auth),
-    start_date: str = None,
-    end_date: str = None
-):
-    """Profit metrics page (theorized from matches)."""
-    if not start_date:
-        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-    if not end_date:
-        end_date = datetime.now().strftime('%Y-%m-%d')
-    
-    start_ts = int(datetime.strptime(start_date, '%Y-%m-%d').timestamp())
-    end_ts = int(datetime.strptime(end_date, '%Y-%m-%d').timestamp()) + 86400  # Include full day
-    
-    conn = get_db_connection()
-    conn.row_factory = lambda c, r: dict(zip([col[0] for col in c.description], r))
-    try:
-        # Total profit and match count
-        cursor = conn.execute("""
-            SELECT 
-                COUNT(*) as match_count,
-                SUM(m.profit) as total_profit
-            FROM matches m
-            JOIN messages msg ON m.message_id = msg.id
-            WHERE msg.timestamp >= ? AND msg.timestamp <= ?
-        """, (start_ts, end_ts))
-        totals = cursor.fetchone()
-        
-        total_profit = totals['total_profit'] or 0
-        match_count = totals['match_count'] or 0
-        avg_profit = total_profit / match_count if match_count > 0 else 0
-        
-        # Daily profit for chart
-        cursor = conn.execute("""
-            SELECT 
-                DATE(datetime(msg.timestamp, 'unixepoch', 'localtime')) as date,
-                SUM(m.profit) as daily_profit,
-                COUNT(*) as daily_matches
-            FROM matches m
-            JOIN messages msg ON m.message_id = msg.id
-            WHERE msg.timestamp >= ? AND msg.timestamp <= ?
-            GROUP BY DATE(datetime(msg.timestamp, 'unixepoch', 'localtime'))
-            ORDER BY date
-        """, (start_ts, end_ts))
-        daily_profit = cursor.fetchall()
-        
-        # Top profitable ASINs
-        cursor = conn.execute("""
-            SELECT 
-                m.asin,
-                m.title,
-                COUNT(*) as match_count,
-                SUM(m.profit) as total_profit,
-                AVG(m.profit) as avg_profit
-            FROM matches m
-            JOIN messages msg ON m.message_id = msg.id
-            WHERE msg.timestamp >= ? AND msg.timestamp <= ?
-            GROUP BY m.asin
-            ORDER BY total_profit DESC
-            LIMIT 20
-        """, (start_ts, end_ts))
-        top_asins = cursor.fetchall()
-    finally:
-        conn.close()
-    
-    return templates.TemplateResponse("profit.html", {
-        "request": request,
-        "user": user,
-        "start_date": start_date,
-        "end_date": end_date,
-        "total_profit": total_profit,
-        "match_count": match_count,
-        "avg_profit": avg_profit,
-        "daily_profit": daily_profit,
-        "top_asins": top_asins,
+        "units": units,
+        "overhead_pct": overhead_pct,
+        "has_data": bool(units),
     })
 
 
@@ -1042,4 +1034,62 @@ async def profit_chart_data(
     return {
         "labels": [d['period'] for d in data],
         "values": [d['total'] or 0 for d in data]
+    }
+
+
+# =============================================================================
+# Settings Routes
+# =============================================================================
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, user: str = Depends(require_auth)):
+    """Settings management page."""
+    overhead_pct = get_overhead_pct()
+    
+    return templates.TemplateResponse("settings.html", {
+        "request": request,
+        "user": user,
+        "overhead_pct": overhead_pct,
+        "default_overhead_pct": DEFAULT_OVERHEAD_PCT,
+    })
+
+
+@router.post("/settings/overhead")
+async def update_overhead_setting(
+    request: Request,
+    user: str = Depends(require_auth),
+    overhead_pct: float = Form(...)
+):
+    """Update overhead percentage setting."""
+    # Validate range
+    if overhead_pct < 0 or overhead_pct > 100:
+        # For HTMX requests, return error message
+        if request.headers.get("HX-Request"):
+            return HTMLResponse(
+                content='<div class="alert alert-error">Overhead must be between 0 and 100%</div>',
+                status_code=400
+            )
+        return RedirectResponse(url="/admin/settings?error=Invalid+value", status_code=303)
+    
+    success = set_overhead_pct(overhead_pct)
+    
+    if request.headers.get("HX-Request"):
+        if success:
+            return HTMLResponse(
+                content=f'<div class="alert alert-success">Overhead updated to {overhead_pct}%</div>'
+            )
+        return HTMLResponse(
+            content='<div class="alert alert-error">Failed to save setting</div>',
+            status_code=500
+        )
+    
+    return RedirectResponse(url="/admin/settings", status_code=303)
+
+
+@router.get("/api/settings")
+async def get_settings_api(user: str = Depends(require_auth)):
+    """API endpoint to get all settings."""
+    return {
+        "overhead_pct": get_overhead_pct(),
+        "all_settings": get_all_settings()
     }

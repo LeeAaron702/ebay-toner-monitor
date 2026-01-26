@@ -132,6 +132,7 @@ class LotMatchResult:
 
 # from telegram_utils import send_telegram_message, send_media_group
 from db.listings_db import init_db, is_id_seen, add_seen_id, gc_old_ids, insert_message, insert_match
+from db.products_db import get_overhead_pct, calculate_effective_net
 from utils.telegram_service import send_media_group_with_caption
 
 # ─── Load environment ──────────────────────────────────────────────────────
@@ -1081,6 +1082,10 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
             net_val = float(row["net"])
         except:
             net_val = None
+        try:
+            amazon_price_val = float(row["amazon_price"]) if row.get("amazon_price") else None
+        except:
+            amazon_price_val = None
         return {
             "model": row["model"],
             "capacity": row["capacity"],
@@ -1090,6 +1095,7 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
             "ASIN": row["ASIN"],
             "BSR": bsr_val,
             "net": net_val,
+            "amazon_price": amazon_price_val,
             "sellable": str(row["sellable"]).strip().lower() == "sellable",
             "notes": row.get("notes", None),
         }
@@ -1118,6 +1124,7 @@ def find_multi_pack_alternatives(
     capacity   = original['capacity']
     orig_color = original['color'].lower()
     target_ps  = [2,4,5] if orig_color == 'black' else [3,4,5]
+    overhead_pct = get_overhead_pct()  # Get current overhead setting
 
     results = []
     for ps in target_ps:
@@ -1154,7 +1161,10 @@ def find_multi_pack_alternatives(
 
         # compute metrics
         for _, row in cand.iterrows():
-            net = float(row['net'])
+            raw_net = float(row['net'])
+            amazon_price = float(row['amazon_price']) if row.get('amazon_price') else None
+            # Apply overhead to get effective net
+            net = calculate_effective_net(raw_net, amazon_price, overhead_pct)
             unit_net    = net / ps
             unit_profit = unit_net - total_sale
             try:
@@ -1215,6 +1225,7 @@ def calculate_lot_match(
     individual_matches = []
     unmatched_colors = []
     total_net_split = 0.0
+    overhead_pct = get_overhead_pct()  # Get current overhead setting
     
     for color, qty in lot.color_quantities.items():
         # Find single-unit match for this model/capacity/color
@@ -1227,8 +1238,12 @@ def calculate_lot_match(
         
         if not cand.empty:
             row = cand.iloc[0]
-            unit_net = float(row['net']) if row['net'] else 0.0
+            raw_net = float(row['net']) if row['net'] else 0.0
+            amazon_price = float(row['amazon_price']) if row.get('amazon_price') else None
             sellable = str(row['sellable']).strip().lower() == 'sellable'
+            
+            # Apply overhead deduction to get effective net
+            unit_net = calculate_effective_net(raw_net, amazon_price, overhead_pct)
             
             try:
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
@@ -1299,7 +1314,10 @@ def calculate_lot_match(
             
             if not cand_4pack.empty:
                 row = cand_4pack.iloc[0]
-                pack_net = float(row['net']) if row['net'] else 0.0
+                raw_pack_net = float(row['net']) if row['net'] else 0.0
+                amazon_price = float(row['amazon_price']) if row.get('amazon_price') else None
+                # Apply overhead to pack net
+                pack_net = calculate_effective_net(raw_pack_net, amazon_price, overhead_pct)
                 sellable = str(row['sellable']).strip().lower() == 'sellable'
                 try:
                     bsr_val = int(float(str(row['BSR']).replace(',', '')))
@@ -1347,7 +1365,10 @@ def calculate_lot_match(
                 
             if not cand_3pack.empty:
                 row = cand_3pack.iloc[0]
-                pack_net = float(row['net']) if row['net'] else 0.0
+                raw_pack_net = float(row['net']) if row['net'] else 0.0
+                amazon_price = float(row['amazon_price']) if row.get('amazon_price') else None
+                # Apply overhead to pack net
+                pack_net = calculate_effective_net(raw_pack_net, amazon_price, overhead_pct)
                 sellable = str(row['sellable']).strip().lower() == 'sellable'
                 try:
                     bsr_val = int(float(str(row['BSR']).replace(',', '')))
@@ -1391,7 +1412,10 @@ def calculate_lot_match(
             
         if not cand_2pack.empty and sets_of_2 > 0:
             row = cand_2pack.iloc[0]
-            pack_net = float(row['net']) if row['net'] else 0.0
+            raw_pack_net = float(row['net']) if row['net'] else 0.0
+            amazon_price = float(row['amazon_price']) if row.get('amazon_price') else None
+            # Apply overhead to pack net
+            pack_net = calculate_effective_net(raw_pack_net, amazon_price, overhead_pct)
             sellable = str(row['sellable']).strip().lower() == 'sellable'
             try:
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
@@ -1446,105 +1470,76 @@ def format_lot_match_message(
     """
     Format a LotMatchResult into a Telegram message section.
     Shows both split and set strategies for arbitrage decisions.
+    Compact format to avoid Telegram message length limits.
     """
     lot = lot_result.lot_breakdown
     lines = []
     
-    # Header - consistent with "Product Match" style
-    lines.append("Mixed Lot Match")
+    # Header with inline contents - e.g. "Mixed Lot: 1B 2C 2M 2Y (4 units)"
+    color_abbrev = {"black": "B", "cyan": "C", "magenta": "M", "yellow": "Y"}
+    if lot.color_quantities:
+        contents_str = " ".join(
+            f"{qty}{color_abbrev.get(color, color[0].upper())}"
+            for color, qty in sorted(lot.color_quantities.items())
+        )
+        lines.append(f"Mixed Lot: {contents_str} ({lot.total_units} units)")
+    else:
+        lines.append("Mixed Lot Match")
     
     if lot.confidence != "high" and lot.confidence_notes:
-        lines.append(f"Note: {'; '.join(lot.confidence_notes)}")
-    
-    # Lot breakdown
-    if lot.color_quantities:
-        lines.append("Contents:")
-        for color, qty in sorted(lot.color_quantities.items()):
-            lines.append(f"{qty}x {color.capitalize()}")
-        lines.append(f"Total Units: {lot.total_units}")
-    
-    lines.append("")
+        lines.append(f"⚠️ {'; '.join(lot.confidence_notes)}")
     
     # ─── SPLIT STRATEGY ─────────────────────────────────────────────────────
     if lot_result.individual_matches:
-        lines.append("Strategy: Sell as Singles")
         lines.append("")
+        lines.append("Singles:")
         
+        # One line per color with indentation: "  1x Black: $45.07 | 🟡161K | B003EHEKBG"
         for match in lot_result.individual_matches:
-            sellable_emoji = "🟩 Yes" if match.sellable else "🟥 No"
-            bsr_emoji, bsr_str = get_bsr_emoji(match.bsr)
-            
-            lines.append(f"{match.quantity}x {match.color.capitalize()}")
-            lines.append(f"ASIN: <a href=\"https://amazon.com/d/{match.asin}\">{match.asin}</a>")
-            lines.append(f"BSR: {bsr_emoji} {bsr_str} | Sellable: {sellable_emoji}")
-            
-            if match.sellable:
-                lines.append(f"Net: ${match.unit_net:.2f}")
-            else:
-                lines.append(f"Net: $0.00 (Not Sellable)")
-            lines.append("")
+            bsr_emoji, _ = get_bsr_emoji(match.bsr)
+            bsr_short = f"{match.bsr // 1000}K" if match.bsr and match.bsr >= 1000 else str(match.bsr or "N/A")
+            sellable_mark = " ⛔" if not match.sellable else ""
+            asin_link = f"<a href=\"https://amazon.com/d/{match.asin}\">{match.asin}</a>"
+            lines.append(f"  {match.quantity}x {match.color.capitalize()}: ${match.unit_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}")
         
-        # Summary (Singles)
-        lines.append("Summary (Singles)")
-        lines.append(f"Total Value: ${lot_result.total_net_if_split:.2f}")
+        # Singles summary - Value, Profit, Unmatched all indented
+        lines.append(f"  Value: ${lot_result.total_net_if_split:.2f}")
         
         profit = lot_result.profit_if_split
         profit_pct = (profit / lot_result.total_net_if_split * 100) if lot_result.total_net_if_split > 0 else 0
         unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
-        
-        # Profit emoji logic: Unit profit >= TARGET_PROFIT
         is_profitable = unit_profit >= TARGET_PROFIT
         profit_emoji = "💰" if is_profitable else ""
         
-        lines.append(f"Total Profit: {profit_emoji} ${profit:.2f} ({profit_pct:.1f}%)")
-        lines.append(f"Unit Profit: ${unit_profit:.2f}")
-    
-    # Show unmatched colors
-    if lot_result.has_unmatched_colors:
-        lines.append(f"Unmatched colors: {', '.join(lot_result.unmatched_colors)}")
-    
-    lines.append("")
+        lines.append(f"  Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%) | unit: ${unit_profit:.2f}")
+        
+        # Show unmatched colors under Singles section
+        if lot_result.has_unmatched_colors:
+            lines.append(f"  Unmatched: {', '.join(lot_result.unmatched_colors)}")
     
     # ─── SET STRATEGY ───────────────────────────────────────────────────────
     if lot_result.set_alternatives:
-        lines.append("Strategy: Sell as Sets")
         lines.append("")
+        lines.append("Sets:")
         
-        # Calculate profit values once
+        for alt in lot_result.set_alternatives:
+            bsr_emoji, _ = get_bsr_emoji(alt.bsr)
+            bsr_short = f"{alt.bsr // 1000}K" if alt.bsr and alt.bsr >= 1000 else str(alt.bsr or "N/A")
+            sellable_mark = " ⛔" if not alt.sellable else ""
+            asin_link = f"<a href=\"https://amazon.com/d/{alt.asin}\">{alt.asin}</a>"
+            
+            leftover_str = f" (Color and leftover amount)" if alt.leftover_units > 0 else ""
+            lines.append(f"  {alt.sets_needed}x {alt.pack_type}: ${alt.total_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}{leftover_str}")
+        
+        # Sets profit summary
         profit = lot_result.profit_if_sets
         profit_pct = (profit / lot_result.best_set_net * 100) if lot_result.best_set_net > 0 else 0
         unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
-        
-        # Profit emoji logic: Unit profit >= TARGET_PROFIT
         is_profitable = unit_profit >= TARGET_PROFIT
         profit_emoji = "💰" if is_profitable else ""
         
-        for alt in lot_result.set_alternatives:
-            sellable_emoji = "🟩 Yes" if alt.sellable else "🟥 No"
-            bsr_emoji, bsr_str = get_bsr_emoji(alt.bsr)
-            
-            # Use sheet title if available (implied by user request "include the title from the sheet")
-            # We don't have the sheet title directly in SetAlternative, but we have pack_type.
-            # User said: "1x 3 Color (CMY) -> that should include the title from the sheet. So it should read 1x Canon 131 3 Color Standard."
-            # We can construct it: Canon {model} {pack_type}
-            
-            lines.append(f"{alt.sets_needed}x Canon {lot.model} {alt.pack_type}")
-            lines.append(f"ASIN: <a href=\"https://amazon.com/d/{alt.asin}\">{alt.asin}</a>")
-            lines.append(f"BSR: {bsr_emoji} {bsr_str} | Sellable: {sellable_emoji}")
-            
-            if alt.sellable:
-                lines.append(f"Net: ${alt.total_net:.2f}")
-            else:
-                lines.append(f"Net: $0.00 (Not Sellable)")
-            
-            lines.append(f"Profit: {profit_emoji} ${profit:.2f} ({profit_pct:.1f}%)")
-            lines.append(f"Unit Profit: ${unit_profit:.2f}")
-                
-            if alt.leftover_units > 0:
-                lines.append(f"({alt.leftover_units} leftover units)")
-            lines.append("")
-
-    # Omit "Set Options: No matching sets available" if empty
+        lines.append(f"Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%)")
+        lines.append(f"unit: ${unit_profit:.2f}")
     
     return "\n".join(lines)
 
@@ -1669,15 +1664,10 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
 
         msg = (
             f"{title}\n\n"
-            f"Seller: {username}  Feedback: {fb_score}, {fb_pct}%\n\n"
-            f"Listed: {listed_time}\n"
-            f'Link: <a href="{url}">{item_id}</a>\n\n'
-            f"Type: {sale_type}\n\n"
-            # f"Description: {summary}\n\n"
-            f"Quantity: {dets.get('quantity')}\n"
-            f"Price: ${price_str}\n"
-            f"Shipping: ${ship_str}\n"
-            f"Total: ${total_str}\n\n"
+            f"{username} ({fb_score}, {fb_pct}%) | {listed_time}\n"
+            f'<a href="{url}">{item_id}</a>\n'
+            f"Qty: {dets.get('quantity')}\n"
+            f"${price_str} + ${ship_str} = ${total_str}\n\n"
         )
 
         # ─── Check if this is a mixed lot that needs special handling ───────
@@ -1695,7 +1685,11 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
         
         # ─── CASE 1: Standard single match found ────────────────────────────
         if match and not is_mixed:
-            net_cost     = match["net"] or 0.0
+            raw_net      = match["net"] or 0.0
+            amazon_price = match.get("amazon_price")
+            overhead_pct = get_overhead_pct()
+            # Apply overhead deduction to get effective net
+            net_cost     = calculate_effective_net(raw_net, amazon_price, overhead_pct)
             profit       = net_cost - total_sale
             profit_margin_pct = (profit / net_cost * 100) if net_cost > 0 else 0.0
             bsr_emoji, bsr = get_bsr_emoji(match["BSR"])

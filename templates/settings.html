@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Settings</h1>
+    <p>Configure system-wide settings for profit calculations</p>
+</div>
+
+<!-- Alert container for HTMX responses -->
+<div id="alert-container"></div>
+
+<!-- Overhead Settings -->
+<div class="section">
+    <div class="section-title">Profit Calculation</div>
+    <div class="card">
+        <h3>Overhead Percentage</h3>
+        <p class="text-muted text-sm" style="margin-bottom: var(--space-4);">
+            This percentage is deducted from the Amazon sale price to account for hidden costs:
+            inbound shipping, return allowances, packaging/prep, and safety margin.
+        </p>
+        
+        <form hx-post="/admin/settings/overhead" 
+              hx-target="#alert-container"
+              hx-swap="innerHTML"
+              style="display: flex; gap: var(--space-4); align-items: flex-end; flex-wrap: wrap;">
+            <div class="form-group" style="margin-bottom: 0;">
+                <label for="overhead_pct">Overhead %</label>
+                <input type="number" 
+                       id="overhead_pct" 
+                       name="overhead_pct" 
+                       value="{{ overhead_pct }}" 
+                       min="0" 
+                       max="100" 
+                       step="0.5"
+                       style="width: 120px;">
+            </div>
+            <button type="submit" class="btn">Save</button>
+        </form>
+        
+        <div class="info-box" style="margin-top: var(--space-6);">
+            <h4 style="margin-bottom: var(--space-2);">How it works</h4>
+            <p class="text-sm mb-0">
+                <strong>Formula:</strong> Effective Net = Seller Proceeds - (Amazon Price × {{ overhead_pct }}%)
+            </p>
+            <p class="text-sm text-muted mb-0" style="margin-top: var(--space-2);">
+                Example: If Amazon price is $50 and Seller Proceeds is $30, with {{ overhead_pct }}% overhead:<br>
+                Effective Net = $30 - ($50 × {{ overhead_pct / 100 }}) = $30 - ${{ "%.2f"|format(50 * overhead_pct / 100) }} = <strong>${{ "%.2f"|format(30 - 50 * overhead_pct / 100) }}</strong>
+            </p>
+        </div>
+        
+        <div class="help-text" style="margin-top: var(--space-4);">
+            <h4 style="margin-bottom: var(--space-2);">What the overhead covers</h4>
+            <ul class="text-sm text-muted" style="margin: 0; padding-left: var(--space-6);">
+                <li><strong>Inbound shipping:</strong> $0.50-2.00+ per unit to Amazon warehouse</li>
+                <li><strong>Return allowances:</strong> ~2-5% of units become unsellable returns</li>
+                <li><strong>Packaging/prep:</strong> Labels, poly bags, boxes (~$0.20-0.50/unit)</li>
+                <li><strong>Cost to carry:</strong> Storage fees + capital tied up</li>
+                <li><strong>Safety margin:</strong> Buffer for price fluctuations</li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- Current Values Reference -->
+<div class="section">
+    <div class="section-title">Reference</div>
+    <div class="stats-grid" style="grid-template-columns: repeat(2, 1fr);">
+        <div class="stat-card">
+            <h3>Current Overhead</h3>
+            <div class="value">{{ overhead_pct }}%</div>
+            <div class="subtext">Applied to Amazon sale price</div>
+        </div>
+        <div class="stat-card">
+            <h3>Default Value</h3>
+            <div class="value">{{ default_overhead_pct }}%</div>
+            <div class="subtext">Recommended starting point</div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .info-box {
+        background: var(--gray-50);
+        border: 1px solid var(--border);
+        padding: var(--space-4);
+        border-radius: 4px;
+    }
+    
+    .help-text {
+        border-top: 1px solid var(--border);
+        padding-top: var(--space-4);
+    }
+    
+    .alert {
+        padding: var(--space-3) var(--space-4);
+        border-radius: 4px;
+        margin-bottom: var(--space-4);
+    }
+    
+    .alert-success {
+        background: #d4edda;
+        border: 1px solid #c3e6cb;
+        color: #155724;
+    }
+    
+    .alert-error {
+        background: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+    }
+</style>
+{% endblock %}

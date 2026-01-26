@@ -1,7 +1,9 @@
 <table>
     <thead>
         <tr>
+            <th style="width: 30px;"></th>
             <th>Date</th>
+            <th>Account</th>
             <th>Order ID</th>
             <th>Item Title</th>
             <th>Qty</th>
@@ -12,8 +14,16 @@
     </thead>
     <tbody>
         {% for order in orders %}
-        <tr>
+        <tr class="order-row" 
+            style="cursor: pointer;"
+            hx-get="/admin/api/order-matches/{{ order.order_id | urlencode }}/{{ order.transaction_id | urlencode }}"
+            hx-target="#matches-{{ loop.index }}"
+            hx-swap="innerHTML"
+            hx-trigger="click"
+            onclick="this.classList.toggle('expanded'); document.getElementById('matches-{{ loop.index }}').classList.toggle('show');">
+            <td class="expand-icon">▶</td>
             <td>{{ order.created_time[:10] if order.created_time else '-' }}</td>
+            <td>{{ order.account_label or '-' }}</td>
             <td class="mono">{{ order.order_id[:12] if order.order_id else '-' }}...</td>
             <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" 
                 title="{{ order.item_title }}">
@@ -24,12 +34,41 @@
             <td>{{ order.seller_user_id or '-' }}</td>
             <td><strong>${{ "%.2f" | format(order.order_total | float) if order.order_total else '-' }}</strong></td>
         </tr>
+        <tr class="matches-row" id="matches-row-{{ loop.index }}">
+            <td colspan="9" style="padding: 0;">
+                <div class="matches-container" id="matches-{{ loop.index }}">
+                    <!-- Loaded via HTMX -->
+                </div>
+            </td>
+        </tr>
         {% else %}
         <tr>
-            <td colspan="7" style="text-align: center; padding: 2rem;">
+            <td colspan="9" style="text-align: center; padding: 2rem;">
                 No orders found for the selected date range.
             </td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+
+<style>
+.order-row .expand-icon {
+    transition: transform 0.2s;
+    color: var(--gray-400);
+    font-size: 0.75rem;
+}
+.order-row.expanded .expand-icon {
+    transform: rotate(90deg);
+}
+.order-row:hover {
+    background: var(--gray-50);
+}
+.matches-container {
+    display: none;
+    background: var(--gray-50);
+    border-top: 1px solid var(--border);
+}
+.matches-container.show {
+    display: block;
+}
+</style>

@@ -1,0 +1,76 @@
+{% if has_data %}
+<div class="order-matches-detail" style="padding: 0.75rem 1rem 0.75rem 2.5rem; background: var(--gray-50);">
+    <table style="width: 100%; font-size: 0.8125rem; border-collapse: collapse;">
+        <thead>
+            <tr style="color: var(--gray-500); font-weight: 500;">
+                <th style="padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border);">ASIN</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border);">Item</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: center; border-bottom: 1px solid var(--border);">Qty</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: right; border-bottom: 1px solid var(--border);">Paid</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: right; border-bottom: 1px solid var(--border);">BB Landed</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: right; border-bottom: 1px solid var(--border);">Proceeds</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: right; border-bottom: 1px solid var(--border);">Net (-{{ "%.0f" | format(overhead_pct) }}%)</th>
+                <th style="padding: 0.5rem 0.75rem; text-align: right; border-bottom: 1px solid var(--border);">Profit</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for unit in units %}
+            {% if unit.color != 'unmatched' %}
+            <tr>
+                <td style="padding: 0.5rem 0.75rem;">
+                    {% if unit.asin %}
+                    <a href="https://amazon.com/dp/{{ unit.asin }}" target="_blank" class="mono" style="font-size: 0.75rem;">
+                        {{ unit.asin }}
+                    </a>
+                    {% else %}-{% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.75rem;">
+                    <strong>{{ unit.model or '-' }}</strong> {{ unit.capacity or '' }} {{ unit.color or '' }}
+                </td>
+                <td style="padding: 0.5rem 0.75rem; text-align: center;">{{ unit.quantity }}</td>
+                <td style="padding: 0.5rem 0.75rem; text-align: right;">${{ "%.2f" | format(unit.unit_cost) }}</td>
+                <td style="padding: 0.5rem 0.75rem; text-align: right;">
+                    {% if unit.amazon_price %}${{ "%.2f" | format(unit.amazon_price) }}{% else %}-{% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.75rem; text-align: right;">
+                    {% if unit.seller_proceeds %}${{ "%.2f" | format(unit.seller_proceeds) }}{% else %}-{% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.75rem; text-align: right;">
+                    {% if unit.net_after_overhead %}${{ "%.2f" | format(unit.net_after_overhead) }}{% else %}-{% endif %}
+                </td>
+                <td style="padding: 0.5rem 0.75rem; text-align: right; font-weight: 600;">
+                    {% if unit.profit %}
+                    <span style="color: {% if unit.profit > 0 %}#16a34a{% else %}#dc2626{% endif %};">
+                        ${{ "%.2f" | format(unit.profit) }}
+                    </span>
+                    {% else %}-{% endif %}
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr style="border-top: 2px solid var(--border); font-weight: 600;">
+                <td colspan="7" style="padding: 0.5rem 0.75rem; text-align: right;">
+                    Total Profit:
+                </td>
+                <td style="padding: 0.5rem 0.75rem; text-align: right;">
+                    {% set total_profit = namespace(value=0) %}
+                    {% for unit in units %}
+                    {% if unit.color != 'unmatched' and unit.profit %}
+                    {% set total_profit.value = total_profit.value + unit.profit %}
+                    {% endif %}
+                    {% endfor %}
+                    <span style="color: {% if total_profit.value > 0 %}#16a34a{% else %}#dc2626{% endif %}; font-size: 0.9375rem;">
+                        ${{ "%.2f" | format(total_profit.value) }}
+                    </span>
+                </td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+{% else %}
+<div style="padding: 0.75rem 1rem 0.75rem 2.5rem; color: var(--gray-500); font-size: 0.8125rem; background: var(--gray-50);">
+    No matched products found for this order.
+</div>
+{% endif %}

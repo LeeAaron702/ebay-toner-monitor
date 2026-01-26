@@ -23,9 +23,13 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DB_PATH = os.path.abspath(os.getenv("DB_PATH", os.path.join(REPO_ROOT, "database.db")))
 
 PRODUCTS_TABLE = 'products'
+SETTINGS_TABLE = 'settings'
 
 # Valid brands
 VALID_BRANDS = {'canon', 'xerox', 'lexmark'}
+
+# Default settings
+DEFAULT_OVERHEAD_PCT = 15.0  # 15% overhead deducted from amazon_price
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -62,6 +66,7 @@ def init_products_db():
                 
                 -- Amazon metrics (updated by analyzer import)
                 net_cost REAL,
+                amazon_price REAL,
                 bsr INTEGER,
                 sellable INTEGER DEFAULT 1,
                 
@@ -96,8 +101,119 @@ def init_products_db():
         columns = [row[1] for row in cursor.fetchall()]
         if 'notes' not in columns:
             conn.execute(f'ALTER TABLE {PRODUCTS_TABLE} ADD COLUMN notes TEXT')
+        
+        # Migration: add amazon_price column if it doesn't exist
+        if 'amazon_price' not in columns:
+            conn.execute(f'ALTER TABLE {PRODUCTS_TABLE} ADD COLUMN amazon_price REAL')
+        
+        # Create settings table
+        conn.execute(f'''
+            CREATE TABLE IF NOT EXISTS {SETTINGS_TABLE} (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        ''')
+        
+        # Initialize default settings if not present
+        conn.execute(f'''
+            INSERT OR IGNORE INTO {SETTINGS_TABLE} (key, value)
+            VALUES ('overhead_pct', ?)
+        ''', (str(DEFAULT_OVERHEAD_PCT),))
     
     conn.close()
+
+
+# =============================================================================
+# Settings Functions
+# =============================================================================
+
+def get_setting(key: str, default: str = None) -> Optional[str]:
+    """Get a setting value by key."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute(
+            f'SELECT value FROM {SETTINGS_TABLE} WHERE key = ?',
+            (key,)
+        )
+        row = cursor.fetchone()
+        return row['value'] if row else default
+    finally:
+        conn.close()
+
+
+def set_setting(key: str, value: str) -> bool:
+    """Set a setting value (insert or update)."""
+    conn = get_db_connection()
+    try:
+        with conn:
+            conn.execute(f'''
+                INSERT INTO {SETTINGS_TABLE} (key, value, updated_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+            ''', (key, value, value))
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def get_overhead_pct() -> float:
+    """Get the overhead percentage setting."""
+    value = get_setting('overhead_pct', str(DEFAULT_OVERHEAD_PCT))
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return DEFAULT_OVERHEAD_PCT
+
+
+def set_overhead_pct(pct: float) -> bool:
+    """Set the overhead percentage setting (0-100)."""
+    if not 0 <= pct <= 100:
+        return False
+    return set_setting('overhead_pct', str(pct))
+
+
+def get_all_settings() -> Dict[str, str]:
+    """Get all settings as a dictionary."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute(f'SELECT key, value FROM {SETTINGS_TABLE}')
+        return {row['key']: row['value'] for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
+def calculate_effective_net(net_cost: float, amazon_price: float, overhead_pct: float = None) -> float:
+    """
+    Calculate effective net after overhead deduction.
+    
+    Formula: effective_net = net_cost - (amazon_price × overhead_pct / 100)
+    
+    The overhead covers:
+    - Inbound shipping to Amazon
+    - Return allowances
+    - Packaging/prep costs
+    - Safety margin for price fluctuations
+    
+    Args:
+        net_cost: Seller proceeds from analyzer (after Amazon fees)
+        amazon_price: Amazon buybox/sale price
+        overhead_pct: Overhead percentage (default: from settings)
+    
+    Returns:
+        Effective net - the max you should pay on eBay to be profitable
+    """
+    if overhead_pct is None:
+        overhead_pct = get_overhead_pct()
+    
+    if amazon_price is None or amazon_price <= 0:
+        # If no amazon_price, can't calculate overhead - return net_cost as-is
+        return net_cost
+    
+    overhead_amount = amazon_price * (overhead_pct / 100)
+    return net_cost - overhead_amount
 
 
 def generate_id() -> str:
@@ -225,9 +341,9 @@ def create_product(product: Dict[str, Any]) -> str:
                 INSERT INTO {PRODUCTS_TABLE} (
                     id, brand, model, capacity, group_key,
                     part_number, variant_label, color, pack_size,
-                    asin, amazon_sku, net_cost, bsr, sellable, notes,
+                    asin, amazon_sku, net_cost, amazon_price, bsr, sellable, notes,
                     source_tab, is_model_block, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
             ''', (
                 product_id,
                 brand,
@@ -241,6 +357,7 @@ def create_product(product: Dict[str, Any]) -> str:
                 product.get('asin'),
                 product.get('amazon_sku'),
                 product.get('net_cost'),
+                product.get('amazon_price'),
                 product.get('bsr'),
                 1 if product.get('sellable', True) else 0,
                 product.get('notes'),
@@ -329,23 +446,32 @@ def update_product(product_id: str, updates: Dict[str, Any]) -> bool:
         conn.close()
 
 
-def delete_product(product_id: str) -> bool:
+def delete_product(product_id: str, hard: bool = False) -> bool:
     """
-    Delete a product permanently.
+    Delete a product (soft delete by default, hard delete if specified).
     
     Args:
         product_id: The product ID
+        hard: If True, permanently delete. If False, set sellable=0 (soft delete).
     
     Returns:
-        True if product was found and deleted, False otherwise
+        True if product was found and deleted/deactivated, False otherwise
     """
     conn = get_db_connection()
     try:
         with conn:
-            cursor = conn.execute(
-                f'DELETE FROM {PRODUCTS_TABLE} WHERE id = ?',
-                (product_id,)
-            )
+            if hard:
+                # Permanent deletion
+                cursor = conn.execute(
+                    f'DELETE FROM {PRODUCTS_TABLE} WHERE id = ?',
+                    (product_id,)
+                )
+            else:
+                # Soft delete - set sellable to 0
+                cursor = conn.execute(
+                    f'UPDATE {PRODUCTS_TABLE} SET sellable = 0, updated_at = ? WHERE id = ?',
+                    (datetime.now().isoformat(), product_id)
+                )
             return cursor.rowcount > 0
     finally:
         conn.close()
@@ -356,6 +482,7 @@ def list_products(
     group_key: str = None,
     model: str = None,
     search: str = None,
+    include_inactive: bool = False,
     limit: int = 100,
     offset: int = 0
 ) -> List[Dict[str, Any]]:
@@ -367,6 +494,7 @@ def list_products(
         group_key: Filter by group_key (for printable blocks)
         model: Filter by model
         search: Search in model, part_number, or asin
+        include_inactive: If True, include products with sellable=0 (default False)
         limit: Max results (default 100)
         offset: Pagination offset
     
@@ -375,6 +503,10 @@ def list_products(
     """
     conditions = []
     params = []
+    
+    # By default, only show active (sellable) products
+    if not include_inactive:
+        conditions.append('(sellable IS NULL OR sellable = 1)')
     
     if brand:
         conditions.append('brand = ?')
@@ -569,12 +701,12 @@ def bulk_upsert_products(products: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def bulk_update_metrics(metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Bulk update BSR/net_cost/sellable from analyzer output.
+    Bulk update BSR/net_cost/amazon_price/sellable from analyzer output.
     
     Matches by ASIN (across all brands).
     
     Args:
-        metrics: List of dicts with asin, net_cost, bsr, sellable
+        metrics: List of dicts with asin, net_cost, amazon_price, bsr, sellable
     
     Returns:
         Dict with stats: {total, updated, not_found, errors}
@@ -595,6 +727,8 @@ def bulk_update_metrics(metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
                     updates = {}
                     if 'net_cost' in m and m['net_cost'] is not None:
                         updates['net_cost'] = m['net_cost']
+                    if 'amazon_price' in m and m['amazon_price'] is not None:
+                        updates['amazon_price'] = m['amazon_price']
                     if 'bsr' in m and m['bsr'] is not None:
                         updates['bsr'] = m['bsr']
                     if 'sellable' in m and m['sellable'] is not None:
@@ -666,7 +800,7 @@ def get_canon_products() -> pd.DataFrame:
     Get Canon products DataFrame for engine matching.
     
     Returns DataFrame with columns matching Canon engine expectations:
-    - model, capacity, pack_size, variant, color, ASIN, BSR, net, sellable
+    - model, capacity, pack_size, variant, color, ASIN, BSR, net, amazon_price, sellable
     """
     df = get_products_for_engine('canon')
     if df.empty:
@@ -692,7 +826,7 @@ def get_xerox_products() -> pd.DataFrame:
     Get Xerox products DataFrame for engine matching.
     
     Returns DataFrame with columns matching Xerox engine expectations:
-    - part_number, variant_label, capacity, net, asin, sku, bsr, sellable (bool)
+    - part_number, variant_label, capacity, net, amazon_price, asin, sku, bsr, sellable (bool)
     """
     df = get_products_for_engine('xerox')
     if df.empty:
@@ -717,7 +851,7 @@ def get_lexmark_products() -> pd.DataFrame:
     
     Returns DataFrame with columns matching Lexmark engine expectations:
     - model_family, part_number, part_number_lower, variant_label, color,
-      capacity, pack_size, net_cost, asin, amazon_sku, bsr, sellable (bool)
+      capacity, pack_size, net_cost, amazon_price, asin, amazon_sku, bsr, sellable (bool)
     """
     df = get_products_for_engine('lexmark')
     if df.empty:

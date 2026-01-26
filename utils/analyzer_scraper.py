@@ -281,7 +281,10 @@ async def download_excel(page: Page, download_dir: str, upload_id: str) -> Optio
         print("Could not find result link to click")
         return None
     
-    await page.wait_for_timeout(3000)
+    # Wait 45 seconds for the report to fully load in the frontend
+    # This prevents downloading incomplete Excel files
+    print("Waiting 45 seconds for report to fully load in browser...")
+    await page.wait_for_timeout(45000)
     
     # Open dropdown and select "Full Data View"
     try:
@@ -471,6 +474,11 @@ async def run_analyzer_workflow(csv_path: str, download_dir: Optional[str] = Non
             if not await wait_for_results(page, upload_id, timeout_seconds=300):
                 print("Failed to get results within timeout")
                 return None
+            
+            # Step 3.5: Wait 45 seconds before accessing the report
+            # This ensures the report is fully ready on the backend
+            print("Waiting 45 seconds before accessing report (allowing full load)...")
+            await page.wait_for_timeout(45000)
             
             # Step 4: Download Excel (pass upload_id to find our specific result)
             filepath = await download_excel(page, download_dir, upload_id)

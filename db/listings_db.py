@@ -571,28 +571,29 @@ def expand_order_to_purchased_units(order_row: Dict[str, Any]) -> List[Dict[str,
 	"""
 	Expand an order_history row into purchased_units rows based on lot_breakdown.
 	
-	IMPORTANT: Only expands HIGH or MEDIUM confidence breakdowns.
-	Low confidence entries are SKIPPED to avoid polluting analytics with guessed data.
+	IMPORTANT: 
+	- Only expands HIGH or MEDIUM confidence breakdowns.
+	- For each color, picks the ASIN with HIGHEST per-unit net profit.
+	- Returns exactly ONE entry per color (not multiple ASINs).
+	- Uses quantity_purchased from eBay order for actual units bought.
 	
-	Parses match1-4_lot_breakdown JSON to create per-color entries.
-	The lot_breakdown JSON has structure:
-	{
-		"model": "045",
-		"capacity": "Standard", 
-		"color_quantities": {"black": 2, "cyan": 1, ...},
-		"total_units": 4,
-		"confidence": "high" | "medium" | "low",
-		...
-	}
-	
-	Returns list of unit dicts ready for insert_purchased_units_batch.
+	Strategy: If a 2-pack has higher per-unit profit than a 1-pack, we use
+	the 2-pack ASIN because we'll hold inventory to sell as 2-packs.
 	"""
-	units = []
 	order_id = order_row.get('order_id')
 	transaction_id = order_row.get('transaction_id')
 	item_id = order_row.get('item_id')
 	created_time = order_row.get('created_time') or ''
-	purchased_date = created_time[:10] if created_time else None  # Extract date portion
+	purchased_date = created_time[:10] if created_time else None
+	
+	# Get eBay quantity purchased - this is the ACTUAL number of units bought
+	quantity_purchased_str = order_row.get('quantity_purchased')
+	try:
+		ebay_quantity = int(quantity_purchased_str) if quantity_purchased_str else 1
+	except (ValueError, TypeError):
+		ebay_quantity = 1
+	if ebay_quantity < 1:
+		ebay_quantity = 1
 	
 	# Get total transaction cost for unit cost calculation
 	transaction_price = order_row.get('transaction_price')
@@ -600,6 +601,18 @@ def expand_order_to_purchased_units(order_row: Dict[str, Any]) -> List[Dict[str,
 		total_cost = float(transaction_price) if transaction_price else 0.0
 	except (ValueError, TypeError):
 		total_cost = 0.0
+	
+	# First pass: collect ALL candidate matches per color
+	# Structure: {color: [{'asin': ..., 'net_per_unit': ..., ...}, ...]}
+	candidates_by_color: Dict[str, List[Dict]] = {}
+	
+	# Track the total units across ALL matches to calculate correct unit_cost
+	# (we need the FIRST valid lot_breakdown's total_units for cost calculation)
+	overall_total_units = 0
+	overall_model = ''
+	overall_capacity = ''
+	overall_lot_type = 'single'
+	overall_color_quantities = {}
 	
 	for i in range(1, 5):
 		lot_breakdown_str = order_row.get(f'match{i}_lot_breakdown')
@@ -611,92 +624,156 @@ def expand_order_to_purchased_units(order_row: Dict[str, Any]) -> List[Dict[str,
 		except (json.JSONDecodeError, TypeError):
 			continue
 		
-		if not lot_data:
+		if not lot_data or not isinstance(lot_data, dict):
 			continue
 		
-		# Extract color_quantities from the lot_breakdown structure
-		# lot_data could be the full LotBreakdown dict or just color_quantities dict
-		if isinstance(lot_data, dict):
-			if 'color_quantities' in lot_data:
-				# Full LotBreakdown structure
-				color_quantities = lot_data.get('color_quantities', {})
-				model_from_breakdown = lot_data.get('model', '')
-				capacity_from_breakdown = lot_data.get('capacity', 'standard')
-				lot_total_units = lot_data.get('total_units', 0)
-				confidence = lot_data.get('confidence', 'high')  # Default to high for backwards compat
-			else:
-				# Assume it's just a color_quantities dict directly
-				color_quantities = lot_data
-				model_from_breakdown = ''
-				capacity_from_breakdown = 'standard'
-				lot_total_units = sum(color_quantities.values()) if color_quantities else 0
-				confidence = 'high'  # Old format without confidence, assume high
+		# Extract from lot_breakdown
+		if 'color_quantities' in lot_data:
+			color_quantities = lot_data.get('color_quantities', {})
+			model_from_breakdown = lot_data.get('model', '')
+			capacity_from_breakdown = lot_data.get('capacity', 'standard')
+			lot_total_units = lot_data.get('total_units', 0)
+			confidence = lot_data.get('confidence', 'high')
 		else:
-			continue
+			color_quantities = lot_data
+			model_from_breakdown = ''
+			capacity_from_breakdown = 'standard'
+			lot_total_units = sum(lot_data.values()) if lot_data else 0
+			confidence = 'high'
 		
-		# SKIP LOW CONFIDENCE ENTRIES
-		# These have ambiguous per-color quantities and would pollute analytics
+		# Skip low confidence
 		if confidence == 'low':
 			continue
 		
 		if not color_quantities:
 			continue
 		
+		# Capture overall info from first valid match
+		if overall_total_units == 0:
+			overall_total_units = lot_total_units or sum(color_quantities.values())
+			overall_model = model_from_breakdown
+			overall_capacity = capacity_from_breakdown
+			overall_color_quantities = color_quantities.copy()
+			if len(color_quantities) > 1 or any(qty > 1 for qty in color_quantities.values()):
+				overall_lot_type = 'mixed'
+		
 		# Get match details
 		asin = order_row.get(f'match{i}_asin', '')
+		title = order_row.get(f'match{i}_title', '') or order_row.get('item_title', '')
+		
 		bsr_str = order_row.get(f'match{i}_bsr', '')
 		try:
 			bsr = int(bsr_str) if bsr_str else 0
 		except (ValueError, TypeError):
 			bsr = 0
 		
+		# Get pack_size for this match (the Amazon product's pack configuration)
+		pack_size_str = order_row.get(f'match{i}_pack_size', '')
+		try:
+			match_pack_size = int(pack_size_str) if pack_size_str else 1
+		except (ValueError, TypeError):
+			match_pack_size = 1
+		if match_pack_size < 1:
+			match_pack_size = 1
+		
+		# Get net_per_unit - this is ALREADY per-unit (backfill divides by pack_size)
 		net_cost_str = order_row.get(f'match{i}_net_cost', '')
 		try:
-			net_cost = float(net_cost_str) if net_cost_str else 0.0
+			net_per_unit = float(net_cost_str) if net_cost_str else 0.0
 		except (ValueError, TypeError):
-			net_cost = 0.0
+			net_per_unit = 0.0
 		
-		# Use total_units from match column, fallback to lot_breakdown, then calculated
-		total_units_str = order_row.get(f'match{i}_total_units', '')
-		try:
-			total_units = int(total_units_str) if total_units_str else lot_total_units
-		except (ValueError, TypeError):
-			total_units = lot_total_units
+		# Determine which color this match is for
+		match_color = extract_color_from_title(title)
 		
-		if total_units == 0:
-			total_units = sum(color_quantities.values())
+		if match_color:
+			color = match_color.lower()
+		elif len(color_quantities) == 1:
+			# Single color in lot, use it
+			color = list(color_quantities.keys())[0]
+		else:
+			# Can't determine color for this match, skip
+			continue
 		
-		# Determine lot type
-		is_mixed = len(color_quantities) > 1 or any(qty > 1 for qty in color_quantities.values())
-		lot_type = 'mixed' if is_mixed else 'single'
+		# Add to candidates for this color
+		if color not in candidates_by_color:
+			candidates_by_color[color] = []
 		
-		# Calculate unit cost
-		unit_cost = total_cost / total_units if total_units > 0 else total_cost
+		candidates_by_color[color].append({
+			'asin': asin,
+			'bsr': bsr,
+			'net_per_unit': net_per_unit,
+			'pack_size': match_pack_size,
+			'title': title,
+			'match_index': i,
+			'model': model_from_breakdown or extract_model_from_title(title),
+			'capacity': capacity_from_breakdown or extract_capacity_from_title(title),
+		})
+	
+	# If no candidates found, return empty
+	if not candidates_by_color:
+		return []
+	
+	# Calculate unit_cost based on whether this is a mixed lot or single-color item
+	# - Single-color: transaction_price is already per-unit, unit_cost = transaction_price
+	# - Mixed lot: transaction_price is for the whole set, unit_cost = transaction_price / num_colors
+	num_colors = len(overall_color_quantities) if overall_color_quantities else 1
+	is_mixed_lot = num_colors > 1
+	
+	if is_mixed_lot:
+		# For mixed lots, divide transaction_price by number of colors in the set
+		unit_cost = total_cost / num_colors if num_colors > 0 else total_cost
+	else:
+		# For single-color items, transaction_price is already per-unit
+		unit_cost = total_cost
+	
+	# Second pass: for each color, pick the BEST ASIN (highest net_per_unit)
+	units = []
+	for color, candidates in candidates_by_color.items():
+		if not candidates:
+			continue
 		
-		# Extract model from title or use from breakdown
-		title = order_row.get(f'match{i}_title', '') or order_row.get('item_title', '')
-		model = model_from_breakdown or extract_model_from_title(title)
-		capacity = capacity_from_breakdown or extract_capacity_from_title(title)
+		# Sort by net_per_unit descending, pick the best one
+		best = max(candidates, key=lambda x: x.get('net_per_unit', 0))
 		
-		for color, qty in color_quantities.items():
-			units.append({
-				'order_id': order_id,
-				'transaction_id': transaction_id,
-				'item_id': item_id,
-				'purchased_date': purchased_date,
-				'model': model,
-				'capacity': capacity,
-				'color': color,
-				'quantity': qty,
-				'unit_cost': unit_cost,
-				'asin': asin,
-				'bsr': bsr,
-				'net_per_unit': net_cost,  # This is already per-unit from match
-				'lot_type': lot_type,
-				'match_index': i
-			})
+		# Quantity = eBay quantity purchased
+		# For single-color: qty = ebay_quantity (e.g., bought 4 black toners)
+		# For mixed lots: qty = ebay_quantity (e.g., bought 2 sets = 2 of each color)
+		qty = ebay_quantity
+		
+		units.append({
+			'order_id': order_id,
+			'transaction_id': transaction_id,
+			'item_id': item_id,
+			'purchased_date': purchased_date,
+			'model': best.get('model') or overall_model,
+			'capacity': best.get('capacity') or overall_capacity,
+			'color': color,
+			'quantity': qty,
+			'unit_cost': unit_cost,
+			'asin': best.get('asin', ''),
+			'bsr': best.get('bsr', 0),
+			'net_per_unit': best.get('net_per_unit', 0),
+			'lot_type': overall_lot_type,
+			'match_index': best.get('match_index', 1)
+		})
 	
 	return units
+
+
+def extract_color_from_title(title: str) -> str:
+	"""Extract color from match title (e.g., 'Canon GPR-58 Cyan' -> 'cyan')."""
+	if not title:
+		return ''
+	
+	title_lower = title.lower()
+	colors = ['black', 'cyan', 'magenta', 'yellow', 'blue', 'red', 'green']
+	
+	for color in colors:
+		if color in title_lower:
+			return color
+	
+	return ''
 
 
 def extract_model_from_title(title: str) -> str:

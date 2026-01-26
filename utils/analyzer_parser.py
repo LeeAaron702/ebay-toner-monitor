@@ -7,7 +7,7 @@ for bulk updating the products database.
 Key columns from analyzer.tools:
     - ASIN: Product identifier
     - Seller Proceeds: Net proceeds after Amazon fees (THIS IS NET_COST)
-    - Avg Buybox 90d: Average buybox price (for reference)
+    - Buybox Landed: Current daily buybox price (THIS IS AMAZON_PRICE for overhead calc)
     - Avg Sales Rank 30d / Avg Sales Rank 90d: Best Seller Rank
     - New FBA Offers / New FBM Offers: Competition data
 """
@@ -22,7 +22,7 @@ import pandas as pd
 # Column mappings from analyzer.tools Excel to our internal format
 ASIN_COLUMN = "ASIN"
 SELLER_PROCEEDS_COLUMN = "Seller Proceeds"  # This is what we actually get paid after Amazon fees
-BUYBOX_COLUMN = "Avg Buybox 90d"
+BUYBOX_COLUMN = "Buybox Landed"  # Current daily Amazon sale price for overhead calculation
 BSR_30D_COLUMN = "Avg Sales Rank 30d"
 BSR_90D_COLUMN = "Avg Sales Rank 90d"
 NEW_FBA_OFFERS_COLUMN = "New FBA Offers"
@@ -64,13 +64,23 @@ def parse_analyzer_excel(filepath: str) -> List[Dict[str, Any]]:
         metric = {"asin": asin}
         
         # Extract net_cost from Seller Proceeds - this is what we actually receive after Amazon fees
-        # This is the TARGET PRICE we should pay on eBay to be profitable
+        # This is the BASE price before overhead deduction
         seller_proceeds = row.get(SELLER_PROCEEDS_COLUMN)
         if pd.notna(seller_proceeds):
             try:
                 proceeds_val = float(seller_proceeds)
-                # Use seller proceeds directly as net_cost (max we should pay)
+                # Use seller proceeds directly as net_cost
                 metric["net_cost"] = round(proceeds_val, 2)
+            except (ValueError, TypeError):
+                pass
+        
+        # Extract amazon_price from Buybox Landed - this is the current daily Amazon sale price
+        # Used for calculating overhead (inbound shipping, returns, etc.)
+        buybox = row.get(BUYBOX_COLUMN)
+        if pd.notna(buybox):
+            try:
+                buybox_val = float(buybox)
+                metric["amazon_price"] = round(buybox_val, 2)
             except (ValueError, TypeError):
                 pass
         
@@ -85,20 +95,8 @@ def parse_analyzer_excel(filepath: str) -> List[Dict[str, Any]]:
             except (ValueError, TypeError):
                 pass
         
-        # Determine sellable status
-        # Consider sellable if there are FBA offers or seller proceeds > 0
-        seller_proceeds = row.get(SELLER_PROCEEDS_COLUMN)
-        fba_offers = row.get(NEW_FBA_OFFERS_COLUMN)
-        
-        # Default to current status (don't change) if we can't determine
-        # Only mark as not sellable if BSR is very high (>1,000,000) or no data
-        if pd.notna(bsr):
-            try:
-                bsr_val = int(float(bsr))
-                # High BSR (>1M) suggests low demand
-                metric["sellable"] = bsr_val < 1_000_000
-            except (ValueError, TypeError):
-                pass
+        # NOTE: sellable is NOT set here - it's manually managed via CSV audit
+        # The analyzer job should only update pricing/BSR metrics, not sellable status
         
         metrics.append(metric)
     
@@ -116,17 +114,16 @@ def parse_and_summarize(filepath: str) -> Dict[str, Any]:
     
     # Calculate summary
     with_net_cost = sum(1 for m in metrics if "net_cost" in m)
+    with_amazon_price = sum(1 for m in metrics if "amazon_price" in m)
     with_bsr = sum(1 for m in metrics if "bsr" in m)
-    sellable_count = sum(1 for m in metrics if m.get("sellable", True))
     
     return {
         "metrics": metrics,
         "summary": {
             "total_asins": len(metrics),
             "with_net_cost": with_net_cost,
+            "with_amazon_price": with_amazon_price,
             "with_bsr": with_bsr,
-            "sellable": sellable_count,
-            "not_sellable": len(metrics) - sellable_count,
         }
     }
 
@@ -161,9 +158,8 @@ if __name__ == "__main__":
         print(f"\n=== Analyzer Excel Summary ===")
         print(f"Total ASINs: {result['summary']['total_asins']}")
         print(f"With net_cost: {result['summary']['with_net_cost']}")
+        print(f"With amazon_price: {result['summary']['with_amazon_price']}")
         print(f"With BSR: {result['summary']['with_bsr']}")
-        print(f"Sellable: {result['summary']['sellable']}")
-        print(f"Not sellable: {result['summary']['not_sellable']}")
         
         # Print first 5 metrics as sample
         print(f"\nSample metrics (first 5):")

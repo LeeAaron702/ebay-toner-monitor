@@ -37,7 +37,7 @@ from db.listings_db import (
     insert_message,
     is_id_seen,
 )
-from db.products_db import get_xerox_products
+from db.products_db import get_xerox_products, get_overhead_pct, calculate_effective_net
 
 load_dotenv()
 
@@ -527,10 +527,12 @@ def build_listing_message(
     )
 
     variant_entries: List[Dict[str, Any]] = []
+    overhead_pct = get_overhead_pct()  # Get current overhead setting
     for match in matches:
         sku = (match.get("sku") or "").upper()
         for variant in match.get("variants", []):
             net_cost = _normalize_net_cost(variant.get("net"))
+            amazon_price = variant.get("amazon_price")
             variant_entries.append(
                 {
                     "sku": sku,
@@ -542,6 +544,7 @@ def build_listing_message(
                     "bsr": _parse_bsr(variant.get("bsr")),
                     "sellable": bool(variant.get("sellable")),
                     "net_cost": net_cost,
+                    "amazon_price": amazon_price,
                     "pack_size": variant.get("pack_size"),
                     "color": variant.get("color"),
                     "notes": variant.get("notes"),
@@ -551,20 +554,29 @@ def build_listing_message(
     variant_summaries: List[Dict[str, Any]] = []
     for entry in variant_entries:
         net_cost = entry["net_cost"]
-        profit = (net_cost - total_sale) if isinstance(net_cost, (int, float)) else None
+        amazon_price = entry.get("amazon_price")
+        # Apply overhead deduction to get effective net
+        if isinstance(net_cost, (int, float)):
+            effective_net = calculate_effective_net(net_cost, amazon_price, overhead_pct)
+            profit = effective_net - total_sale
+        else:
+            effective_net = None
+            profit = None
         margin = (
-            (profit / net_cost * 100)
-            if profit is not None and net_cost not in (None, 0)
+            (profit / effective_net * 100)
+            if profit is not None and effective_net not in (None, 0)
             else None
         )
         entry["profit"] = profit
+        entry["effective_net"] = effective_net
         entry["margin_pct"] = margin
         variant_summaries.append(
             {
                 "sku": entry["sku"],
                 "part_number": entry["part_number"],
                 "variant_label": entry["variant_label"],
-                "net": net_cost,
+                "net": entry.get("effective_net"),  # Use effective net after overhead
+                "raw_net": net_cost,  # Original seller proceeds
                 "profit": profit,
                 "margin_pct": margin,
                 "bsr": entry["bsr"],
@@ -580,13 +592,13 @@ def build_listing_message(
 
     if variant_entries:
         primary = variant_entries[0]
-        net_cost = primary["net_cost"]
+        effective_net = primary.get("effective_net")
         profit = primary.get("profit")
         margin = primary.get("margin_pct") or 0.0
         profit_emoji = _profit_marker(profit, primary["sellable"])
         bsr_emoji, bsr_display = _bsr_marker(primary["bsr"])
         sellable_str = "🟩 Yes" if primary["sellable"] else "⛔ No"
-        net_display = _format_currency(net_cost)
+        net_display = _format_currency(effective_net)
         if profit is None:
             profit_display = "N/A"
         else:
@@ -629,7 +641,7 @@ def build_listing_message(
                     f"Title: {alt_title}\n"
                     f"{_format_asin_line(alt.get('asin'))}\n"
                     f"BSR: {alt_bsr_emoji} {alt_bsr_display} | Sellable: {alt_sellable_str}\n"
-                    f"Net: {_format_currency(alt['net_cost'])}\n"
+                    f"Net: {_format_currency(alt.get('effective_net'))}\n"
                     f"Profit: {alt_profit_emoji} {alt_profit_display}\n\n"
                 )
     else:

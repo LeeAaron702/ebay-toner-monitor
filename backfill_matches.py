@@ -2,22 +2,21 @@
 """
 backfill_matches.py
 -------------------
-One-time script to retroactively run the matching algorithm on existing order history.
+Script to retroactively run the matching algorithm on existing order history.
+
+Supports ALL brands: Canon, Xerox, Lexmark
 
 This script:
-1. Loads Canon product data from SQL database
-2. Reads all orders from order_history table
-3. Runs the matching algorithm on each item_title
+1. Loads product data from SQL database for all brands
+2. Reads orders from order_history table
+3. Detects brand from item_title and runs appropriate matching
 4. Creates messages and matches entries
 5. Re-enriches order_history with match data
 6. Populates purchased_units for analytics
 
-RUN THIS ONCE after:
-1. Docker container is up
-2. Order history has been fetched (order_history table is populated)
-
 Usage:
-    python backfill_matches.py
+    python backfill_matches.py              # Process all unmatched orders
+    python backfill_matches.py --full       # Reprocess ALL orders
 
 After running, you can verify with:
     sqlite3 database.db "SELECT COUNT(*) FROM matches;"
@@ -28,7 +27,9 @@ import json
 import sqlite3
 import time
 import sys
+import re
 from pathlib import Path
+from typing import Dict, List, Optional, Any
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -48,20 +49,51 @@ from db.listings_db import (
     get_backfill_status,
 )
 
+# Canon imports
 from engine.canon import (
-    match_listing,
+    match_listing as canon_match_listing,
     is_mixed_lot_listing,
     build_lot_breakdown,
     calculate_lot_match,
     find_multi_pack_alternatives,
-    extract_pack_size,
 )
-from db.products_db import get_canon_products
+
+# Xerox imports
+from engine.xerox import (
+    build_sku_index as build_xerox_sku_index,
+    resolve_listing_variants as xerox_resolve_variants,
+)
+
+# Lexmark imports  
+from engine.lexmark import (
+    build_part_number_index as build_lexmark_pn_index,
+    resolve_listing_variants as lexmark_resolve_variants,
+)
+
+from db.products_db import (
+    get_canon_products, 
+    get_xerox_products,
+    get_lexmark_products,
+    get_overhead_pct, 
+    calculate_effective_net,
+)
 
 
 def _log(message: str) -> None:
     """Log a message with script prefix."""
     print(f"LOG - backfill_matches.py - {message}")
+
+
+def detect_brand(item_title: str) -> Optional[str]:
+    """Detect brand from item title."""
+    title_lower = item_title.lower()
+    if 'canon' in title_lower or 'gpr-' in title_lower or 'gpr ' in title_lower:
+        return 'canon'
+    if 'xerox' in title_lower:
+        return 'xerox'
+    if 'lexmark' in title_lower:
+        return 'lexmark'
+    return None
 
 
 def sanitize_for_json(obj):
@@ -130,15 +162,25 @@ def update_order_history_match_columns(order_id: str, transaction_id: str, match
     conn.close()
 
 
-def backfill_matches_for_order(row: dict, sheet_df) -> dict:
+def backfill_matches_for_order(row: dict, products_data: dict) -> dict:
     """
     Run matching algorithm on an order row and return match data.
+    
+    Args:
+        row: Order history row dict
+        products_data: Dict with keys 'canon_df', 'xerox_sku_map', 'lexmark_pn_map'
+        
     Returns dict with match1_*, match2_*, etc. columns.
     """
     item_id = row.get('item_id', '')
     item_title = row.get('item_title', '')
     
     if not item_title:
+        return {}
+    
+    # Detect brand
+    brand = detect_brand(item_title)
+    if not brand:
         return {}
     
     # Get price info for profit calculations
@@ -153,6 +195,45 @@ def backfill_matches_for_order(row: dict, sheet_df) -> dict:
         shipping_cost = 0.0
     
     total_sale = transaction_price + shipping_cost
+    overhead_pct = get_overhead_pct()
+    
+    matches_to_insert = []
+    
+    if brand == 'canon':
+        matches_to_insert = _match_canon_order(item_title, total_sale, products_data.get('canon_df'), overhead_pct)
+    elif brand == 'xerox':
+        matches_to_insert = _match_xerox_order(item_title, total_sale, products_data.get('xerox_sku_map'), overhead_pct)
+    elif brand == 'lexmark':
+        matches_to_insert = _match_lexmark_order(item_title, total_sale, products_data.get('lexmark_pn_map'), overhead_pct)
+    
+    # Build match columns for order_history
+    match_columns = {}
+    for i, m in enumerate(matches_to_insert[:4], start=1):
+        match_columns[f'match{i}_title'] = m.get('title', '')
+        match_columns[f'match{i}_asin'] = m.get('asin', '')
+        match_columns[f'match{i}_bsr'] = str(m.get('bsr', '')) if m.get('bsr') else ''
+        match_columns[f'match{i}_sellable'] = 'true' if m.get('sellable') else 'false'
+        match_columns[f'match{i}_net_cost'] = str(m.get('net_cost', '')) if m.get('net_cost') is not None else ''
+        match_columns[f'match{i}_profit'] = str(m.get('profit', '')) if m.get('profit') is not None else ''
+        match_columns[f'match{i}_pack_size'] = str(m.get('pack_size', '')) if m.get('pack_size') else ''
+        match_columns[f'match{i}_color'] = m.get('color', '')
+        match_columns[f'match{i}_is_alternative'] = 'true' if m.get('is_alternative') else 'false'
+        match_columns[f'match{i}_lot_breakdown'] = m.get('lot_breakdown', '')
+        match_columns[f'match{i}_total_units'] = str(m.get('total_units', '')) if m.get('total_units') else ''
+    
+    return {
+        'matches': matches_to_insert,
+        'columns': match_columns,
+        'brand': brand,
+    }
+
+
+def _match_canon_order(item_title: str, total_sale: float, sheet_df, overhead_pct: float) -> List[dict]:
+    """Match a Canon order using the Canon engine."""
+    if sheet_df is None or sheet_df.empty:
+        return []
+    
+    matches_to_insert = []
     
     # Check if this is a mixed lot
     is_mixed = is_mixed_lot_listing(item_title)
@@ -161,19 +242,16 @@ def backfill_matches_for_order(row: dict, sheet_df) -> dict:
     if is_mixed:
         lot_breakdown = build_lot_breakdown(item_title, sheet_df)
     
-    matches_to_insert = []
-    match_columns = {}
-    
     # Try standard matching first
-    match = match_listing(item_title, sheet_df)
+    match = canon_match_listing(item_title, sheet_df)
     
     # CASE 1: Standard single match
     if match and not is_mixed:
-        net_cost = match.get("net") or 0.0
+        raw_net = match.get("net") or 0.0
+        amazon_price = match.get("amazon_price")
+        net_cost = calculate_effective_net(raw_net, amazon_price, overhead_pct)
         profit = net_cost - total_sale
         
-        # Create lot_breakdown for single items
-        # Convert numpy types to Python native types for JSON serialization
         pack_size_int = int(match['pack_size'])
         single_color = match.get('color', '').lower() or 'unknown'
         single_lot_breakdown = {
@@ -217,8 +295,6 @@ def backfill_matches_for_order(row: dict, sheet_df) -> dict:
     # CASE 2: Mixed lot
     elif is_mixed and lot_breakdown and lot_breakdown.model:
         lot_result = calculate_lot_match(lot_breakdown, sheet_df, total_sale)
-        
-        # Sanitize lot_breakdown for JSON
         lot_breakdown_dict = sanitize_for_json(lot_breakdown.to_dict())
         
         # Store individual color matches
@@ -255,24 +331,116 @@ def backfill_matches_for_order(row: dict, sheet_df) -> dict:
                 'total_units': int(alt.total_units),
             })
     
-    # Build match columns for order_history
-    for i, m in enumerate(matches_to_insert[:4], start=1):
-        match_columns[f'match{i}_title'] = m.get('title', '')
-        match_columns[f'match{i}_asin'] = m.get('asin', '')
-        match_columns[f'match{i}_bsr'] = str(m.get('bsr', '')) if m.get('bsr') else ''
-        match_columns[f'match{i}_sellable'] = 'true' if m.get('sellable') else 'false'
-        match_columns[f'match{i}_net_cost'] = str(m.get('net_cost', '')) if m.get('net_cost') is not None else ''
-        match_columns[f'match{i}_profit'] = str(m.get('profit', '')) if m.get('profit') is not None else ''
-        match_columns[f'match{i}_pack_size'] = str(m.get('pack_size', '')) if m.get('pack_size') else ''
-        match_columns[f'match{i}_color'] = m.get('color', '')
-        match_columns[f'match{i}_is_alternative'] = 'true' if m.get('is_alternative') else 'false'
-        match_columns[f'match{i}_lot_breakdown'] = m.get('lot_breakdown', '')
-        match_columns[f'match{i}_total_units'] = str(m.get('total_units', '')) if m.get('total_units') else ''
+    return matches_to_insert
+
+
+def _match_xerox_order(item_title: str, total_sale: float, sku_map: dict, overhead_pct: float) -> List[dict]:
+    """Match a Xerox order using SKU matching."""
+    if not sku_map:
+        return []
     
-    return {
-        'matches': matches_to_insert,
-        'columns': match_columns,
-    }
+    matches_to_insert = []
+    listing = {"title": item_title}
+    
+    # Use Xerox resolve function
+    variant_matches = xerox_resolve_variants(listing, sku_map)
+    
+    for match in variant_matches:
+        sku = match.get('sku', '')
+        for variant in match.get('variants', []):
+            raw_net = variant.get('net') or 0.0
+            amazon_price = variant.get('amazon_price') or 0.0
+            net_cost = calculate_effective_net(raw_net, amazon_price, overhead_pct)
+            profit = net_cost - total_sale if net_cost else 0.0
+            
+            color = variant.get('color', '') or ''
+            capacity = variant.get('capacity', '') or ''
+            pack_size = int(variant.get('pack_size', 1) or 1)
+            
+            # lot_breakdown tracks what we PURCHASED (1 unit from eBay)
+            # pack_size is the Amazon product configuration (for profit calculation)
+            lot_breakdown = {
+                "model": sku,
+                "capacity": capacity,
+                "color_quantities": {color.lower(): 1} if color else {"unknown": 1},
+                "total_units": 1,
+                "is_mixed_lot": False,
+            }
+            
+            # Calculate per-unit profit: divide net_cost by pack_size
+            net_per_unit = net_cost / pack_size if pack_size > 0 else net_cost
+            profit_per_unit = net_per_unit - total_sale if net_per_unit else 0.0
+            
+            matches_to_insert.append({
+                'is_alternative': 0,
+                'title': f"Xerox {sku} {variant.get('variant_label', '')}".strip(),
+                'asin': variant.get('asin', ''),
+                'bsr': int(variant.get('bsr')) if variant.get('bsr') else None,
+                'sellable': 1 if variant.get('sellable') else 0,
+                'net_cost': float(net_per_unit) if net_per_unit else 0.0,
+                'profit': float(profit_per_unit),
+                'pack_size': pack_size,
+                'color': color,
+                'lot_breakdown': json.dumps(sanitize_for_json(lot_breakdown)),
+                'total_units': 1,
+            })
+    
+    return matches_to_insert
+
+
+def _match_lexmark_order(item_title: str, total_sale: float, pn_map: dict, overhead_pct: float) -> List[dict]:
+    """Match a Lexmark order using part number matching."""
+    if not pn_map:
+        return []
+    
+    matches_to_insert = []
+    listing = {"title": item_title}
+    
+    # Use Lexmark resolve function
+    variant_matches = lexmark_resolve_variants(listing, pn_map)
+    
+    for match in variant_matches:
+        part_number = match.get('part_number', '')
+        for variant in match.get('variants', []):
+            raw_net = variant.get('net_cost') or 0.0
+            amazon_price = variant.get('amazon_price') or 0.0
+            net_cost = calculate_effective_net(raw_net, amazon_price, overhead_pct)
+            profit = net_cost - total_sale if net_cost else 0.0
+            
+            color = variant.get('color', '') or ''
+            capacity = variant.get('capacity', '') or ''
+            pack_size = int(variant.get('pack_size', 1) or 1)
+            model = variant.get('model_family', '') or part_number
+            
+            # lot_breakdown tracks what we PURCHASED (1 unit from eBay)
+            # pack_size is the Amazon product configuration (for profit calculation)
+            lot_breakdown = {
+                "model": model,
+                "capacity": capacity,
+                "color_quantities": {color.lower(): 1} if color else {"unknown": 1},
+                "total_units": 1,
+                "is_mixed_lot": False,
+            }
+            
+            # Calculate per-unit profit: divide net_cost by pack_size
+            net_per_unit = net_cost / pack_size if pack_size > 0 else net_cost
+            profit_per_unit = net_per_unit - total_sale if net_per_unit else 0.0
+            
+            matches_to_insert.append({
+                'is_alternative': 0,
+                'title': f"Lexmark {part_number} {variant.get('variant_label', '')}".strip(),
+                'asin': variant.get('asin', ''),
+                'bsr': int(variant.get('bsr')) if variant.get('bsr') else None,
+                'sellable': 1 if variant.get('sellable') else 0,
+                'net_cost': float(net_per_unit) if net_per_unit else 0.0,
+                'profit': float(profit_per_unit),
+                'pack_size': pack_size,
+                'color': color,
+                'lot_breakdown': json.dumps(sanitize_for_json(lot_breakdown)),
+                'total_units': 1,
+            })
+    
+    return matches_to_insert
 
 
 def run_backfill():
@@ -312,7 +480,7 @@ def run_backfill():
 
 def backfill_orders(orders: list, verbose: bool = False) -> dict:
     """
-    Core backfill logic - processes a list of order rows.
+    Core backfill logic - processes a list of order rows for ALL brands.
     
     This is the reusable function for incremental backfill.
     
@@ -321,25 +489,49 @@ def backfill_orders(orders: list, verbose: bool = False) -> dict:
         verbose: If True, print progress messages
         
     Returns:
-        Dict with stats: {processed, matched, skipped, errors}
+        Dict with stats: {processed, matched, skipped, errors, by_brand}
     """
     if not orders:
-        return {'processed': 0, 'matched': 0, 'skipped': 0, 'errors': 0}
+        return {'processed': 0, 'matched': 0, 'skipped': 0, 'errors': 0, 'by_brand': {}}
     
-    # Load Canon products from SQL database
+    # Load products for ALL brands
     if verbose:
-        print("Loading Canon products from SQL...")
-    sheet_df = get_canon_products()
-    if sheet_df is None or sheet_df.empty:
+        print("Loading products from SQL database...")
+    
+    products_data = {}
+    
+    # Canon
+    canon_df = get_canon_products()
+    products_data['canon_df'] = canon_df
+    if verbose:
+        count = len(canon_df) if canon_df is not None and not canon_df.empty else 0
+        print(f"  Canon: {count} products")
+    
+    # Xerox
+    xerox_df = get_xerox_products()
+    if xerox_df is not None and not xerox_df.empty:
+        # Build SKU index for Xerox matching
+        products_data['xerox_sku_map'] = build_xerox_sku_index(xerox_df)
         if verbose:
-            print("ERROR: Could not load Canon products from database.")
-            print("  Will mark orders as processed with 'unmatched' sentinel entries.")
-        # Still call _populate_units_for_orders to create sentinel entries
-        # This ensures idempotency - we don't keep retrying orders
-        _populate_units_for_orders(orders, verbose)
-        return {'processed': len(orders), 'matched': 0, 'skipped': 0, 'errors': 0}
+            print(f"  Xerox: {len(xerox_df)} products")
+    else:
+        products_data['xerox_sku_map'] = {}
+        if verbose:
+            print("  Xerox: 0 products")
+    
+    # Lexmark
+    lexmark_df = get_lexmark_products()
+    if lexmark_df is not None and not lexmark_df.empty:
+        # Build part number index for Lexmark matching
+        products_data['lexmark_pn_map'] = build_lexmark_pn_index(lexmark_df)
+        if verbose:
+            print(f"  Lexmark: {len(lexmark_df)} products")
+    else:
+        products_data['lexmark_pn_map'] = {}
+        if verbose:
+            print("  Lexmark: 0 products")
+    
     if verbose:
-        print(f"  Loaded {len(sheet_df)} product variants from SQL.")
         print()
         print("Processing orders...")
     
@@ -347,6 +539,7 @@ def backfill_orders(orders: list, verbose: bool = False) -> dict:
     matched = 0
     skipped = 0
     errors = 0
+    by_brand = {'canon': 0, 'xerox': 0, 'lexmark': 0, 'unknown': 0}
     
     for row in orders:
         item_id = row.get('item_id', '')
@@ -364,12 +557,12 @@ def backfill_orders(orders: list, verbose: bool = False) -> dict:
             continue
         
         try:
-            result = backfill_matches_for_order(row, sheet_df)
+            result = backfill_matches_for_order(row, products_data)
+            brand = result.get('brand', 'unknown')
             
             if result.get('matches'):
                 # Create a synthetic message entry if needed
                 if item_id and not check_message_exists(item_id):
-                    # Create listing_id in expected format
                     listing_id = f"v1|{item_id}|0"
                     
                     try:
@@ -413,6 +606,9 @@ def backfill_orders(orders: list, verbose: bool = False) -> dict:
                     update_order_history_match_columns(order_id, transaction_id, result['columns'])
                 
                 matched += 1
+                by_brand[brand] = by_brand.get(brand, 0) + 1
+            else:
+                by_brand['unknown'] = by_brand.get('unknown', 0) + 1
             
             processed += 1
             
@@ -423,6 +619,8 @@ def backfill_orders(orders: list, verbose: bool = False) -> dict:
         except Exception as e:
             if verbose:
                 print(f"  ERROR processing order {order_id}: {e}")
+                import traceback
+                traceback.print_exc()
             errors += 1
     
     if verbose:
@@ -431,6 +629,10 @@ def backfill_orders(orders: list, verbose: bool = False) -> dict:
         print(f"  Total orders: {len(orders)}")
         print(f"  Processed: {processed}")
         print(f"  Matched: {matched}")
+        print(f"    - Canon: {by_brand.get('canon', 0)}")
+        print(f"    - Xerox: {by_brand.get('xerox', 0)}")
+        print(f"    - Lexmark: {by_brand.get('lexmark', 0)}")
+        print(f"    - Unknown brand: {by_brand.get('unknown', 0)}")
         print(f"  Skipped (no title or already matched): {skipped}")
         print(f"  Errors: {errors}")
     
@@ -442,6 +644,7 @@ def backfill_orders(orders: list, verbose: bool = False) -> dict:
         'matched': matched,
         'skipped': skipped,
         'errors': errors,
+        'by_brand': by_brand,
     }
 
 
