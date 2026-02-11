@@ -38,8 +38,11 @@ from db.products_db import (
     VALID_BRANDS,
     get_overhead_pct,
     set_overhead_pct,
+    get_target_profit,
+    set_target_profit,
     get_all_settings,
     DEFAULT_OVERHEAD_PCT,
+    DEFAULT_TARGET_PROFIT,
 )
 from db.listings_db import get_db_connection
 from db.exclusions_db import (
@@ -1045,12 +1048,15 @@ async def profit_chart_data(
 async def settings_page(request: Request, user: str = Depends(require_auth)):
     """Settings management page."""
     overhead_pct = get_overhead_pct()
+    target_profit = get_target_profit()
     
     return templates.TemplateResponse("settings.html", {
         "request": request,
         "user": user,
         "overhead_pct": overhead_pct,
         "default_overhead_pct": DEFAULT_OVERHEAD_PCT,
+        "target_profit": target_profit,
+        "default_target_profit": DEFAULT_TARGET_PROFIT,
     })
 
 
@@ -1086,10 +1092,42 @@ async def update_overhead_setting(
     return RedirectResponse(url="/admin/settings", status_code=303)
 
 
+@router.post("/settings/target-profit")
+async def update_target_profit_setting(
+    request: Request,
+    user: str = Depends(require_auth),
+    target_profit: float = Form(...)
+):
+    """Update target profit threshold setting."""
+    # Validate range
+    if target_profit < 0 or target_profit > 500:
+        if request.headers.get("HX-Request"):
+            return HTMLResponse(
+                content='<div class="alert alert-error">Target profit must be between $0 and $500</div>',
+                status_code=400
+            )
+        return RedirectResponse(url="/admin/settings?error=Invalid+value", status_code=303)
+    
+    success = set_target_profit(target_profit)
+    
+    if request.headers.get("HX-Request"):
+        if success:
+            return HTMLResponse(
+                content=f'<div class="alert alert-success">Target profit updated to ${target_profit:.0f}</div>'
+            )
+        return HTMLResponse(
+            content='<div class="alert alert-error">Failed to save setting</div>',
+            status_code=500
+        )
+    
+    return RedirectResponse(url="/admin/settings", status_code=303)
+
+
 @router.get("/api/settings")
 async def get_settings_api(user: str = Depends(require_auth)):
     """API endpoint to get all settings."""
     return {
         "overhead_pct": get_overhead_pct(),
+        "target_profit": get_target_profit(),
         "all_settings": get_all_settings()
     }

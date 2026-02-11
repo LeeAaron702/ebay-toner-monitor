@@ -63,19 +63,65 @@
     </div>
 </div>
 
+<!-- Target Profit Settings -->
+<div class="section">
+    <div class="section-title">Alert Threshold</div>
+    <div class="card">
+        <h3>Target Profit (💰 Emoji Threshold)</h3>
+        <p class="text-muted text-sm" style="margin-bottom: var(--space-4);">
+            The minimum profit per unit required to display the money bag emoji (💰) in Telegram alerts.
+            Listings meeting or exceeding this threshold are highlighted as profitable opportunities.
+        </p>
+        
+        <form hx-post="/admin/settings/target-profit" 
+              hx-target="#alert-container"
+              hx-swap="innerHTML"
+              style="display: flex; gap: var(--space-4); align-items: flex-end; flex-wrap: wrap;">
+            <div class="form-group" style="margin-bottom: 0;">
+                <label for="target_profit">Target Profit ($)</label>
+                <input type="number" 
+                       id="target_profit" 
+                       name="target_profit" 
+                       value="{{ target_profit }}" 
+                       min="0" 
+                       max="500" 
+                       step="1"
+                       style="width: 120px;">
+            </div>
+            <button type="submit" class="btn">Save</button>
+        </form>
+        
+        <div class="info-box" style="margin-top: var(--space-6);">
+            <h4 style="margin-bottom: var(--space-2);">How it works</h4>
+            <p class="text-sm mb-0">
+                <strong>Formula:</strong> If (Effective Net - eBay Total) ≥ ${{ target_profit }} → Show 💰
+            </p>
+            <p class="text-sm text-muted mb-0" style="margin-top: var(--space-2);">
+                Example: A listing with $45 effective net and $20 eBay price ($45 - $20 = $25 profit)<br>
+                With target of ${{ target_profit }}: {% if 25 >= target_profit %}<strong>💰 Shows</strong>{% else %}No emoji{% endif %}
+            </p>
+        </div>
+    </div>
+</div>
+
 <!-- Current Values Reference -->
 <div class="section">
     <div class="section-title">Reference</div>
-    <div class="stats-grid" style="grid-template-columns: repeat(2, 1fr);">
+    <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
         <div class="stat-card">
             <h3>Current Overhead</h3>
             <div class="value">{{ overhead_pct }}%</div>
             <div class="subtext">Applied to Amazon sale price</div>
         </div>
         <div class="stat-card">
-            <h3>Default Value</h3>
-            <div class="value">{{ default_overhead_pct }}%</div>
-            <div class="subtext">Recommended starting point</div>
+            <h3>Target Profit</h3>
+            <div class="value">${{ target_profit }}</div>
+            <div class="subtext">💰 emoji threshold</div>
+        </div>
+        <div class="stat-card">
+            <h3>Defaults</h3>
+            <div class="value">{{ default_overhead_pct }}% / ${{ default_target_profit }}</div>
+            <div class="subtext">Recommended starting points</div>
         </div>
     </div>
 </div>

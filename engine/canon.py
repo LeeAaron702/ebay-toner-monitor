@@ -132,7 +132,7 @@ class LotMatchResult:
 
 # from telegram_utils import send_telegram_message, send_media_group
 from db.listings_db import init_db, is_id_seen, add_seen_id, gc_old_ids, insert_message, insert_match
-from db.products_db import get_overhead_pct, calculate_effective_net
+from db.products_db import get_overhead_pct, calculate_effective_net, get_target_profit
 from utils.telegram_service import send_media_group_with_caption
 
 # ─── Load environment ──────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ CTX = quote(f"country=US,zip={ZIP_CODE}", safe="")
 QUANTITY_EST = 1
 MARKETPLACE_ID = "EBAY_US"
 
-TARGET_PROFIT = 25
+# TARGET_PROFIT is now loaded dynamically from settings via get_target_profit()
 SEPARATOR = "-" * 10
 
 
@@ -1508,7 +1508,8 @@ def format_lot_match_message(
         profit = lot_result.profit_if_split
         profit_pct = (profit / lot_result.total_net_if_split * 100) if lot_result.total_net_if_split > 0 else 0
         unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
-        is_profitable = unit_profit >= TARGET_PROFIT
+        target_profit = get_target_profit()
+        is_profitable = unit_profit >= target_profit
         profit_emoji = "💰" if is_profitable else ""
         
         lines.append(f"  Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%) | unit: ${unit_profit:.2f}")
@@ -1535,7 +1536,8 @@ def format_lot_match_message(
         profit = lot_result.profit_if_sets
         profit_pct = (profit / lot_result.best_set_net * 100) if lot_result.best_set_net > 0 else 0
         unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
-        is_profitable = unit_profit >= TARGET_PROFIT
+        target_profit = get_target_profit()
+        is_profitable = unit_profit >= target_profit
         profit_emoji = "💰" if is_profitable else ""
         
         lines.append(f"Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%)")
@@ -1574,7 +1576,8 @@ def get_bsr_emoji(bsr_val: Optional[int]) -> Tuple[str, str]:
 
 
 def get_profit_emoji(profit: float, sellable: bool) -> str:
-    return "💰" if sellable and profit >= TARGET_PROFIT else ""
+    target_profit = get_target_profit()
+    return "💰" if sellable and profit >= target_profit else ""
 
 
 # ─── Orchestrator ───────────────────────────────────────────────────────────

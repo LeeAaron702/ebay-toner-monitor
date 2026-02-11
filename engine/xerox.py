@@ -37,7 +37,7 @@ from db.listings_db import (
     insert_message,
     is_id_seen,
 )
-from db.products_db import get_xerox_products, get_overhead_pct, calculate_effective_net
+from db.products_db import get_xerox_products, get_overhead_pct, calculate_effective_net, get_target_profit
 
 load_dotenv()
 
@@ -362,7 +362,8 @@ def _bsr_marker(value: Optional[int]) -> Tuple[str, str]:
 def _profit_marker(profit: Optional[float], sellable: bool) -> str:
     if profit is None or not sellable:
         return ""
-    return "💰" if profit >= 25 else ""
+    target_profit = get_target_profit()
+    return "💰" if profit >= target_profit else ""
 
 
 def _format_asin_line(asin: Optional[str]) -> str:

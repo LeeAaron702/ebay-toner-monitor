@@ -30,6 +30,7 @@ VALID_BRANDS = {'canon', 'xerox', 'lexmark'}
 
 # Default settings
 DEFAULT_OVERHEAD_PCT = 15.0  # 15% overhead deducted from amazon_price
+DEFAULT_TARGET_PROFIT = 25.0  # $25 minimum profit for money emoji
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -120,6 +121,10 @@ def init_products_db():
             INSERT OR IGNORE INTO {SETTINGS_TABLE} (key, value)
             VALUES ('overhead_pct', ?)
         ''', (str(DEFAULT_OVERHEAD_PCT),))
+        conn.execute(f'''
+            INSERT OR IGNORE INTO {SETTINGS_TABLE} (key, value)
+            VALUES ('target_profit', ?)
+        ''', (str(DEFAULT_TARGET_PROFIT),))
     
     conn.close()
 
@@ -173,6 +178,22 @@ def set_overhead_pct(pct: float) -> bool:
     if not 0 <= pct <= 100:
         return False
     return set_setting('overhead_pct', str(pct))
+
+
+def get_target_profit() -> float:
+    """Get the target profit threshold setting (for money emoji)."""
+    value = get_setting('target_profit', str(DEFAULT_TARGET_PROFIT))
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return DEFAULT_TARGET_PROFIT
+
+
+def set_target_profit(amount: float) -> bool:
+    """Set the target profit threshold (minimum $0)."""
+    if amount < 0:
+        return False
+    return set_setting('target_profit', str(amount))
 
 
 def get_all_settings() -> Dict[str, str]:
