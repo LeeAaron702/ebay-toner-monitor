@@ -1536,19 +1536,21 @@ def format_lot_match_message(
             bsr_short = f"{alt.bsr // 1000}K" if alt.bsr and alt.bsr >= 1000 else str(alt.bsr or "N/A")
             sellable_mark = " ⛔" if not alt.sellable else ""
             asin_link = f"<a href=\"https://amazon.com/d/{alt.asin}\">{alt.asin}</a>"
-            
+
             leftover_str = f" (Color and leftover amount)" if alt.leftover_units > 0 else ""
             lines.append(f"{alt.sets_needed}x {alt.pack_type}: ${alt.total_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}{leftover_str}")
-        
-        # Sets profit summary
-        profit = lot_result.profit_if_sets
-        profit_pct = (profit / lot_result.best_set_net * 100) if lot_result.best_set_net > 0 else 0
-        unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
-        is_profitable = unit_profit >= target_profit
-        profit_emoji = "💰" if is_profitable else ""
-        
-        lines.append(f"Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%)")
-        lines.append(f"unit: ${unit_profit:.2f}")
+
+            # Per-set profit calculation
+            set_value = alt.total_net
+            if alt.leftover_units > 0 and lot_result.individual_matches:
+                avg_single = lot_result.total_net_if_split / lot.total_units if lot.total_units > 0 else 0
+                set_value += avg_single * alt.leftover_units
+            alt_profit = set_value - lot_result.total_sale_price
+            alt_profit_pct = (alt_profit / set_value * 100) if set_value > 0 else 0
+            alt_unit_profit = alt_profit / lot.total_units if lot.total_units > 0 else 0
+            is_profitable = alt_unit_profit >= target_profit
+            profit_emoji = "💰" if is_profitable else ""
+            lines.append(f"Profit: {profit_emoji}${alt_profit:.2f} ({alt_profit_pct:.1f}%) | unit: ${alt_unit_profit:.2f}")
     
     return "\n".join(lines)
 
