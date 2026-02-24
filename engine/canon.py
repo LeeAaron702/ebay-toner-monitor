@@ -1071,8 +1071,14 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
         if not colv.empty:
             cand = colv
 
-    # 7) return if single
-    if len(cand) == 1:
+    # 7) pick best candidate — prefer sellable with highest net_cost
+    if len(cand) > 1:
+        sellable = cand[cand["sellable"].str.strip().str.lower() == "sellable"]
+        if not sellable.empty:
+            cand = sellable
+        cand = cand.sort_values("net", ascending=False, na_position="last")
+
+    if len(cand) >= 1:
         row = cand.iloc[0]
         try:
             bsr_val = int(float(str(row["BSR"]).replace(",", "")))
@@ -1473,8 +1479,9 @@ def format_lot_match_message(
     Compact format to avoid Telegram message length limits.
     """
     lot = lot_result.lot_breakdown
+    target_profit = get_target_profit()
     lines = []
-    
+
     # Header with inline contents - e.g. "Mixed Lot: 1B 2C 2M 2Y (4 units)"
     color_abbrev = {"black": "B", "cyan": "C", "magenta": "M", "yellow": "Y"}
     if lot.color_quantities:
@@ -1494,29 +1501,28 @@ def format_lot_match_message(
         lines.append("")
         lines.append("Singles:")
         
-        # One line per color with indentation: "  1x Black: $45.07 | 🟡161K | B003EHEKBG"
+        # One line per color: "1x Black: $45.07 | 🟡161K | B003EHEKBG"
         for match in lot_result.individual_matches:
             bsr_emoji, _ = get_bsr_emoji(match.bsr)
             bsr_short = f"{match.bsr // 1000}K" if match.bsr and match.bsr >= 1000 else str(match.bsr or "N/A")
             sellable_mark = " ⛔" if not match.sellable else ""
             asin_link = f"<a href=\"https://amazon.com/d/{match.asin}\">{match.asin}</a>"
-            lines.append(f"  {match.quantity}x {match.color.capitalize()}: ${match.unit_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}")
-        
-        # Singles summary - Value, Profit, Unmatched all indented
-        lines.append(f"  Value: ${lot_result.total_net_if_split:.2f}")
-        
+            lines.append(f"{match.quantity}x {match.color.capitalize()}: ${match.unit_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}")
+
+        # Singles summary - Value, Profit, Unmatched
+        lines.append(f"Value: ${lot_result.total_net_if_split:.2f}")
+
         profit = lot_result.profit_if_split
         profit_pct = (profit / lot_result.total_net_if_split * 100) if lot_result.total_net_if_split > 0 else 0
         unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
-        target_profit = get_target_profit()
         is_profitable = unit_profit >= target_profit
         profit_emoji = "💰" if is_profitable else ""
-        
-        lines.append(f"  Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%) | unit: ${unit_profit:.2f}")
-        
+
+        lines.append(f"Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%) | unit: ${unit_profit:.2f}")
+
         # Show unmatched colors under Singles section
         if lot_result.has_unmatched_colors:
-            lines.append(f"  Unmatched: {', '.join(lot_result.unmatched_colors)}")
+            lines.append(f"Unmatched: {', '.join(lot_result.unmatched_colors)}")
     
     # ─── SET STRATEGY ───────────────────────────────────────────────────────
     if lot_result.set_alternatives:
@@ -1530,13 +1536,12 @@ def format_lot_match_message(
             asin_link = f"<a href=\"https://amazon.com/d/{alt.asin}\">{alt.asin}</a>"
             
             leftover_str = f" (Color and leftover amount)" if alt.leftover_units > 0 else ""
-            lines.append(f"  {alt.sets_needed}x {alt.pack_type}: ${alt.total_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}{leftover_str}")
+            lines.append(f"{alt.sets_needed}x {alt.pack_type}: ${alt.total_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}{leftover_str}")
         
         # Sets profit summary
         profit = lot_result.profit_if_sets
         profit_pct = (profit / lot_result.best_set_net * 100) if lot_result.best_set_net > 0 else 0
         unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
-        target_profit = get_target_profit()
         is_profitable = unit_profit >= target_profit
         profit_emoji = "💰" if is_profitable else ""
         
@@ -1575,8 +1580,9 @@ def get_bsr_emoji(bsr_val: Optional[int]) -> Tuple[str, str]:
     return emoji, bsr_str
 
 
-def get_profit_emoji(profit: float, sellable: bool) -> str:
-    target_profit = get_target_profit()
+def get_profit_emoji(profit: float, sellable: bool, target_profit: float = None) -> str:
+    if target_profit is None:
+        target_profit = get_target_profit()
     return "💰" if sellable and profit >= target_profit else ""
 
 
@@ -1618,6 +1624,8 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
     print(f"LOG - Canon.py - {len(candidates)} new listings to process")
     candidates.reverse()
 
+    # Cache settings once per cycle to avoid repeated DB reads
+    cached_target_profit = get_target_profit()
 
 
     for it in candidates:
@@ -1669,6 +1677,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
             f"{title}\n\n"
             f"{username} ({fb_score}, {fb_pct}%) | {listed_time}\n"
             f'<a href="{url}">{item_id}</a>\n'
+            f"Type: {sale_type}\n"
             f"Qty: {dets.get('quantity')}\n"
             f"${price_str} + ${ship_str} = ${total_str}\n\n"
         )
@@ -1696,7 +1705,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
             profit       = net_cost - total_sale
             profit_margin_pct = (profit / net_cost * 100) if net_cost > 0 else 0.0
             bsr_emoji, bsr = get_bsr_emoji(match["BSR"])
-            prof_emoji   = get_profit_emoji(profit, match["sellable"])
+            prof_emoji   = get_profit_emoji(profit, match["sellable"], cached_target_profit)
             sellable_str = "🟩 Yes" if match["sellable"] else "⛔ No"
 
             msg += (
@@ -1709,7 +1718,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
             )
             
             # Add notes if present (e.g., "DO NOT BUY", "known bad match")
-            if match.get("notes"):
+            if match.get("notes") and str(match["notes"]).strip().lower() not in ("none", ""):
                 msg += f"⚠️ Note: {match['notes']}\n"
 
             # Create lot_breakdown for single items to enable analytics
@@ -1745,7 +1754,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                     msg += "\nAlternative Match(s):\n"
                     for alt in alts:
                         alt_emoji, alt_bsr   = get_bsr_emoji(alt["BSR"])
-                        alt_prof_emoji       = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"])
+                        alt_prof_emoji       = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"], cached_target_profit)
                         alt_sellable_str = "🟩 Yes" if alt["unit_sellable"] else "⛔ No"
                         alt_margin_pct = (alt["unit_profit"] / alt["unit_net"] * 100) if alt["unit_net"] > 0 else 0.0
                         msg += (
@@ -1849,7 +1858,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                         msg += "\nAlternative Match(s):\n"
                         for alt in alts:
                             alt_emoji, alt_bsr = get_bsr_emoji(alt["BSR"])
-                            alt_prof = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"])
+                            alt_prof = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"], cached_target_profit)
                             alt_sellable_str = "🟩 Yes" if alt["unit_sellable"] else "⛔ No"
                             alt_margin_pct = (alt["unit_profit"] / alt["unit_net"] * 100) if alt["unit_net"] > 0 else 0.0
                             msg += (
