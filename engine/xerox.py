@@ -617,7 +617,7 @@ def build_listing_message(
         )
         
         # Add notes if present (e.g., "DO NOT BUY", "known bad match")
-        if primary.get("notes"):
+        if primary.get("notes") and str(primary["notes"]).strip().lower() not in ("none", ""):
             msg += f"⚠️ Note: {primary['notes']}\n"
 
         alternatives = variant_entries[1:]

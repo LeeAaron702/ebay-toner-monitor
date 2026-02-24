@@ -740,7 +740,7 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
         )
         
         # Add notes if present (e.g., "DO NOT BUY", "known bad match")
-        if primary.get("notes"):
+        if primary.get("notes") and str(primary["notes"]).strip().lower() not in ("none", ""):
             msg += f"⚠️ Note: {primary['notes']}\n"
     else:
         msg += "Product Match\nNo matching product found\n"
