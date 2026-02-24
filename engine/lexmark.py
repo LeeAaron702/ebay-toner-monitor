@@ -254,6 +254,39 @@ def extract_part_number_candidates(title: Optional[str]) -> List[str]:
     return candidates
 
 
+def extract_title_quantity(title: str) -> int:
+    """Extract quantity multiplier from listing title. Returns 1 if no quantity detected."""
+    t = title.strip()
+
+    # Pattern priority order (most specific first):
+    patterns = [
+        (r'\b(\d+)\s*qty\.?\b', 1),           # "2 qty", "2 qty."
+        (r'\bqty\.?\s*(\d+)\b', 1),            # "qty 2", "qty. 2"
+        (r'\blot\s+of\s+(\d+)\b', 1),          # "Lot of 3"
+        (r'\bset\s+of\s+(\d+)\b', 1),          # "Set of 2"
+        (r'\b(\d+)\s*-?\s*(?:pack|pk)\b', 1),  # "2 Pack", "2-Pack", "2pk"
+        (r'^\s*\((\d+)\)\s*', 1),              # "(2) Lexmark..."
+        (r'^(\d+)\s+(?:lexmark|genuine|new|oem)\b', 1),  # "2 Lexmark..."
+        (r'\bx\s*(\d+)\b', 1),                 # "x2", "x 2"
+        (r'\b(\d+)\s*x\b', 1),                 # "2x", "2 x"
+    ]
+
+    for pattern, group in patterns:
+        m = re.search(pattern, t, re.IGNORECASE)
+        if m:
+            qty = int(m.group(group))
+            if 2 <= qty <= 20:  # Sanity check
+                return qty
+
+    # Word numbers
+    word_nums = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+    for word, num in word_nums.items():
+        if re.search(rf'\b{word}\b', t, re.IGNORECASE):
+            return num
+
+    return 1
+
+
 def resolve_listing_variants(
     listing: Dict[str, Any], pn_map: Dict[str, List[dict]]
 ) -> List[Dict[str, Any]]:
@@ -674,6 +707,9 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
         f"Total: ${total_str}\n\n"
     )
 
+    # Detect quantity from the listing title (e.g., "2 qty", "Lot of 3")
+    detected_qty = extract_title_quantity(listing.get("title", ""))
+
     # Process variant matches
     variant_entries: List[Dict[str, Any]] = []
     overhead_pct = get_overhead_pct()  # Get current overhead setting
@@ -710,18 +746,23 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
         # Apply overhead deduction to get effective net
         if isinstance(net_cost, (int, float)) and net_cost > 0:
             effective_net = calculate_effective_net(net_cost, amazon_price, overhead_pct)
-            profit = effective_net - total_sale
+            total_value = effective_net * detected_qty
+            profit = total_value - total_sale
+            per_unit_profit = effective_net - (total_sale / detected_qty) if detected_qty > 0 else 0
         else:
             effective_net = None
+            total_value = None
             profit = None
+            per_unit_profit = None
         margin = (
-            (profit / effective_net * 100)
-            if profit is not None and effective_net not in (None, 0)
+            (profit / total_value * 100)
+            if profit is not None and total_value not in (None, 0)
             else None
         )
         entry["profit"] = profit
         entry["effective_net"] = effective_net
         entry["margin_pct"] = margin
+        entry["per_unit_profit"] = per_unit_profit
         variant_summaries.append({
             "part_number": entry["part_number"],
             "net": effective_net,  # Use effective net after overhead
@@ -735,6 +776,7 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
             "bsr": entry.get("bsr"),
             "capacity": entry.get("capacity"),
             "pack_size": entry.get("pack_size"),
+            "detected_qty": detected_qty,
         })
 
     # Add matching sheet data to message
@@ -742,6 +784,7 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
         primary = variant_entries[0]
         effective_net = primary.get("effective_net")
         profit = primary.get("profit")
+        per_unit_profit = primary.get("per_unit_profit")
         margin = primary.get("margin_pct") or 0.0
         profit_emoji = _profit_marker(profit, primary["sellable"])
         sellable_str = "🟩 Yes" if primary["sellable"] else "⛔ No"
@@ -761,7 +804,12 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
             f"Net: {net_display}\n"
             f"Profit: {profit_emoji} {profit_display}\n"
         )
-        
+
+        # Show quantity breakdown when a multi-unit lot is detected
+        if detected_qty > 1:
+            per_unit_cost = total_sale / detected_qty if detected_qty > 0 else 0
+            msg += f"Detected Qty: {detected_qty} | Per-Unit Cost: ${per_unit_cost:.2f}\n"
+
         # Add notes if present (e.g., "DO NOT BUY", "known bad match")
         if primary.get("notes") and str(primary["notes"]).strip().lower() not in ("none", ""):
             msg += f"⚠️ Note: {primary['notes']}\n"
@@ -816,6 +864,7 @@ def _persist_processed_record(record: Dict[str, Any]) -> None:
             profit=summary.get("profit"),
             pack_size=summary.get("pack_size"),  # Now available from flattened sheet
             color=summary.get("color"),
+            total_units=summary.get("detected_qty") if (summary.get("detected_qty") or 1) > 1 else None,
         )
 
 
