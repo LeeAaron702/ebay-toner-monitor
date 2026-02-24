@@ -190,8 +190,8 @@ def get_target_profit() -> float:
 
 
 def set_target_profit(amount: float) -> bool:
-    """Set the target profit threshold (minimum $0)."""
-    if amount < 0:
+    """Set the target profit threshold ($0-$500)."""
+    if amount < 0 or amount > 500:
         return False
     return set_setting('target_profit', str(amount))
 
@@ -542,10 +542,10 @@ def list_products(
         params.append(model)
     
     if search:
-        conditions.append('(LOWER(model) LIKE ? OR LOWER(part_number) LIKE ? OR LOWER(asin) LIKE ?)')
+        conditions.append('(LOWER(model) LIKE ? OR LOWER(part_number) LIKE ? OR LOWER(asin) LIKE ? OR LOWER(variant_label) LIKE ? OR LOWER(color) LIKE ? OR LOWER(group_key) LIKE ?)')
         search_term = f'%{search.lower()}%'
-        params.extend([search_term, search_term, search_term])
-    
+        params.extend([search_term] * 6)
+
     where_clause = ' AND '.join(conditions) if conditions else '1=1'
     params.extend([limit, offset])
     
@@ -563,22 +563,26 @@ def list_products(
         conn.close()
 
 
-def count_products(brand: str = None, search: str = None) -> int:
+def count_products(brand: str = None, search: str = None, include_inactive: bool = False) -> int:
     """Count products with optional filters."""
     conditions = []
     params = []
+    
+    # By default, only count active (sellable) products
+    if not include_inactive:
+        conditions.append('(sellable IS NULL OR sellable = 1)')
     
     if brand:
         conditions.append('brand = ?')
         params.append(brand.lower())
     
     if search:
-        conditions.append('(LOWER(model) LIKE ? OR LOWER(part_number) LIKE ? OR LOWER(asin) LIKE ?)')
+        conditions.append('(LOWER(model) LIKE ? OR LOWER(part_number) LIKE ? OR LOWER(asin) LIKE ? OR LOWER(variant_label) LIKE ? OR LOWER(color) LIKE ? OR LOWER(group_key) LIKE ?)')
         search_term = f'%{search.lower()}%'
-        params.extend([search_term, search_term, search_term])
-    
+        params.extend([search_term] * 6)
+
     where_clause = ' AND '.join(conditions) if conditions else '1=1'
-    
+
     conn = get_db_connection()
     try:
         cursor = conn.execute(
