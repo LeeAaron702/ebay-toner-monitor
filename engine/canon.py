@@ -293,11 +293,13 @@ def fetch_details(item_id: str, token: str) -> Dict[str, Any]:
         "description": raw_description,
     }
 def fmt_time(raw: str) -> str:
-    try:
-        dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S.%fZ")
-        return utc.localize(dt).astimezone(LOCAL_TZ).strftime("%b %d %Y, %I:%M %p")
-    except:
-        return "Unknown"
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return utc.localize(dt).astimezone(LOCAL_TZ).strftime("%b %d %Y, %I:%M %p %Z")
+        except ValueError:
+            continue
+    return "Unknown"
 
 
 # ─── Matching helpers ───────────────────────────────────────────────────────
@@ -1709,7 +1711,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
             sellable_str = "🟩 Yes" if match["sellable"] else "⛔ No"
 
             msg += (
-                "Matching Sheet Data\n"
+                "Product Match\n"
                 f"Title: Canon {match['model']} {match['variant']}\n"
                 f"ASIN: <a href=\"https://amazon.com/d/{match['ASIN']}\">{match['ASIN']}</a>\n"
                 f"BSR: {bsr_emoji} {bsr} | Sellable: {sellable_str}\n"
