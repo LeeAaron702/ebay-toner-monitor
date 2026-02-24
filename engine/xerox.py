@@ -359,6 +359,29 @@ def _bsr_marker(value: Optional[int]) -> Tuple[str, str]:
     return ("🔴", display)
 
 
+def _format_bsr_display(bsr_current: Optional[int], bsr_avg: Optional[int]) -> str:
+    """
+    Format BSR as dual display (current | 30d avg) when both values are available.
+
+    - Both available:    "🟢 15,234 | 30d: 25,432"
+    - Only 30d avg:      "🟢 25,432 (30d avg)"
+    - Only current:      "🟢 15,234"
+    - Neither:           "N/A"
+
+    The emoji colour is driven by the current BSR; falls back to avg when only avg present.
+    """
+    if bsr_current is not None and bsr_avg is not None:
+        emoji, _ = _bsr_marker(bsr_current)
+        return f"{emoji} {bsr_current:,} | 30d: {bsr_avg:,}"
+    if bsr_avg is not None:
+        emoji, _ = _bsr_marker(bsr_avg)
+        return f"{emoji} {bsr_avg:,} (30d avg)"
+    if bsr_current is not None:
+        emoji, _ = _bsr_marker(bsr_current)
+        return f"{emoji} {bsr_current:,}"
+    return "N/A"
+
+
 def _profit_marker(profit: Optional[float], sellable: bool) -> str:
     if profit is None or not sellable:
         return ""
@@ -543,6 +566,7 @@ def build_listing_message(
                     ),
                     "asin": variant.get("asin"),
                     "bsr": _parse_bsr(variant.get("bsr")),
+                    "bsr_current": _parse_bsr(variant.get("bsr_current")),
                     "sellable": bool(variant.get("sellable")),
                     "net_cost": net_cost,
                     "amazon_price": amazon_price,
@@ -597,7 +621,7 @@ def build_listing_message(
         profit = primary.get("profit")
         margin = primary.get("margin_pct") or 0.0
         profit_emoji = _profit_marker(profit, primary["sellable"])
-        bsr_emoji, bsr_display = _bsr_marker(primary["bsr"])
+        bsr_display = _format_bsr_display(primary.get("bsr_current"), primary["bsr"])
         sellable_str = "🟩 Yes" if primary["sellable"] else "⛔ No"
         net_display = _format_currency(effective_net)
         if profit is None:
@@ -611,7 +635,7 @@ def build_listing_message(
             "Product Match\n"
             f"Title: {title_line}\n"
             f"{_format_asin_line(primary.get('asin'))}\n"
-            f"BSR: {bsr_emoji} {bsr_display} | Sellable: {sellable_str}\n"
+            f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
             f"Net: {net_display}\n"
             f"Profit: {profit_emoji} {profit_display}\n"
         )
@@ -625,7 +649,7 @@ def build_listing_message(
             _log(f"Found {len(alternatives)} alternative set(s)")
             msg += "\nAlternative Match(s):\n"
             for alt in alternatives:
-                alt_bsr_emoji, alt_bsr_display = _bsr_marker(alt["bsr"])
+                alt_bsr_display = _format_bsr_display(alt.get("bsr_current"), alt["bsr"])
                 alt_sellable_str = "🟩 Yes" if alt["sellable"] else "⛔ No"
                 alt_profit = alt.get("profit")
                 alt_margin = alt.get("margin_pct") or 0.0
@@ -641,7 +665,7 @@ def build_listing_message(
                 msg += (
                     f"Title: {alt_title}\n"
                     f"{_format_asin_line(alt.get('asin'))}\n"
-                    f"BSR: {alt_bsr_emoji} {alt_bsr_display} | Sellable: {alt_sellable_str}\n"
+                    f"BSR: {alt_bsr_display} | Sellable: {alt_sellable_str}\n"
                     f"Net: {_format_currency(alt.get('effective_net'))}\n"
                     f"Profit: {alt_profit_emoji} {alt_profit_display}\n\n"
                 )

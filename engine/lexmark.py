@@ -464,6 +464,29 @@ def _bsr_marker(value: Optional[int]) -> Tuple[str, str]:
     return ("🔴", display)
 
 
+def _format_bsr_display(bsr_current: Optional[int], bsr_avg: Optional[int]) -> str:
+    """
+    Format BSR as dual display (current | 30d avg) when both values are available.
+
+    - Both available:    "🟢 15,234 | 30d: 25,432"
+    - Only 30d avg:      "🟢 25,432 (30d avg)"
+    - Only current:      "🟢 15,234"
+    - Neither:           "N/A"
+
+    The emoji colour is driven by the current BSR; falls back to avg when only avg present.
+    """
+    if bsr_current is not None and bsr_avg is not None:
+        emoji, _ = _bsr_marker(bsr_current)
+        return f"{emoji} {bsr_current:,} | 30d: {bsr_avg:,}"
+    if bsr_avg is not None:
+        emoji, _ = _bsr_marker(bsr_avg)
+        return f"{emoji} {bsr_avg:,} (30d avg)"
+    if bsr_current is not None:
+        emoji, _ = _bsr_marker(bsr_current)
+        return f"{emoji} {bsr_current:,}"
+    return "N/A"
+
+
 def _profit_marker(profit: Optional[float], sellable: bool) -> str:
     """Return profit indicator emoji."""
     if profit is None or not sellable:
@@ -671,7 +694,8 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
                 "model_family": variant.get("model_family"),
                 "capacity": variant.get("capacity"),
                 "pack_size": variant.get("pack_size"),
-                "bsr": variant.get("bsr"),
+                "bsr": _parse_bsr(variant.get("bsr")),
+                "bsr_current": _parse_bsr(variant.get("bsr_current")),
                 "notes": variant.get("notes"),
             })
 
@@ -727,14 +751,13 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
         else:
             profit_display = f"${profit:.2f} ({margin:.1f}%)"
         title_line = _format_variant_title(primary.get("part_number"), primary.get("variant_label"))
-        # Use standard BSR marker with emoji for consistency across engines
-        bsr_emoji, bsr_display = _bsr_marker(primary.get("bsr"))
-        
+        bsr_display = _format_bsr_display(primary.get("bsr_current"), primary.get("bsr"))
+
         msg += (
             "Product Match\n"
             f"Title: {title_line}\n"
             f"{_format_asin_line(primary.get('asin'))}\n"
-            f"BSR: {bsr_emoji} {bsr_display} | Sellable: {sellable_str}\n"
+            f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
             f"Net: {net_display}\n"
             f"Profit: {profit_emoji} {profit_display}\n"
         )

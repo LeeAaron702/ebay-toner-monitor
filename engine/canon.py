@@ -86,7 +86,8 @@ class ColorMatch:
     unit_net: float
     subtotal: float
     asin: str
-    bsr: Optional[int] = None
+    bsr: Optional[int] = None          # 30d average BSR
+    bsr_current: Optional[int] = None  # Current BSR
     sellable: bool = True
 
 
@@ -100,7 +101,8 @@ class SetAlternative:
     unit_net: float
     total_net: float
     asin: str
-    bsr: Optional[int] = None
+    bsr: Optional[int] = None          # 30d average BSR
+    bsr_current: Optional[int] = None  # Current BSR
     sellable: bool = True
     leftover_units: int = 0  # Units that don't fit in sets
 
@@ -1087,6 +1089,10 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
         except:
             bsr_val = None
         try:
+            bsr_current_val = int(float(str(row["BSR_current"]).replace(",", "")))
+        except:
+            bsr_current_val = None
+        try:
             net_val = float(row["net"])
         except:
             net_val = None
@@ -1102,6 +1108,7 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
             "color": row["color"],
             "ASIN": row["ASIN"],
             "BSR": bsr_val,
+            "BSR_current": bsr_current_val,
             "net": net_val,
             "amazon_price": amazon_price_val,
             "sellable": str(row["sellable"]).strip().lower() == "sellable",
@@ -1179,12 +1186,17 @@ def find_multi_pack_alternatives(
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
             except:
                 bsr_val = None
+            try:
+                bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
+            except:
+                bsr_current_val = None
 
             results.append({
                 'model':        row['model'],
                 'variant':      row['variant'],
                 'ASIN':         row['ASIN'],
                 'BSR':          bsr_val,
+                'BSR_current':  bsr_current_val,
                 'unit_net':     unit_net,
                 'unit_profit':  unit_profit,
                 'unit_sellable': True,
@@ -1257,10 +1269,14 @@ def calculate_lot_match(
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
             except:
                 bsr_val = None
-            
+            try:
+                bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
+            except:
+                bsr_current_val = None
+
             # If not sellable, value is 0 for profit calculation
             effective_unit_net = unit_net if sellable else 0.0
-            
+
             match = ColorMatch(
                 color=color,
                 quantity=qty,
@@ -1268,6 +1284,7 @@ def calculate_lot_match(
                 subtotal=effective_unit_net * qty,
                 asin=row['ASIN'],
                 bsr=bsr_val,
+                bsr_current=bsr_current_val,
                 sellable=sellable,
             )
             individual_matches.append(match)
@@ -1331,13 +1348,17 @@ def calculate_lot_match(
                     bsr_val = int(float(str(row['BSR']).replace(',', '')))
                 except:
                     bsr_val = None
-                
+                try:
+                    bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
+                except:
+                    bsr_current_val = None
+
                 # Calculate leftover units
                 leftover = sum(color_qtys.values()) - (min_cmyk_qty * 4)
-                
+
                 # If not sellable, value is 0
                 effective_total_net = (pack_net * min_cmyk_qty) if sellable else 0.0
-                
+
                 alt = SetAlternative(
                     pack_type="4 Color",
                     pack_size=4,
@@ -1347,6 +1368,7 @@ def calculate_lot_match(
                     total_net=effective_total_net,
                     asin=row['ASIN'],
                     bsr=bsr_val,
+                    bsr_current=bsr_current_val,
                     sellable=sellable,
                     leftover_units=leftover,
                 )
@@ -1382,11 +1404,15 @@ def calculate_lot_match(
                     bsr_val = int(float(str(row['BSR']).replace(',', '')))
                 except:
                     bsr_val = None
-                
+                try:
+                    bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
+                except:
+                    bsr_current_val = None
+
                 leftover = sum(color_qtys.values()) - (min_cmy_qty * 3)
-                
+
                 effective_total_net = (pack_net * min_cmy_qty) if sellable else 0.0
-                
+
                 alt = SetAlternative(
                     pack_type="3 Color (CMY)",
                     pack_size=3,
@@ -1396,6 +1422,7 @@ def calculate_lot_match(
                     total_net=effective_total_net,
                     asin=row['ASIN'],
                     bsr=bsr_val,
+                    bsr_current=bsr_current_val,
                     sellable=sellable,
                     leftover_units=leftover,
                 )
@@ -1429,11 +1456,15 @@ def calculate_lot_match(
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
             except:
                 bsr_val = None
-            
+            try:
+                bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
+            except:
+                bsr_current_val = None
+
             leftover = black_qty % 2 + sum(v for k, v in color_qtys.items() if k != 'black')
-            
+
             effective_total_net = (pack_net * sets_of_2) if sellable else 0.0
-            
+
             alt = SetAlternative(
                 pack_type="2 Black",
                 pack_size=2,
@@ -1443,6 +1474,7 @@ def calculate_lot_match(
                 total_net=effective_total_net,
                 asin=row['ASIN'],
                 bsr=bsr_val,
+                bsr_current=bsr_current_val,
                 sellable=sellable,
                 leftover_units=leftover,
             )
@@ -1505,8 +1537,10 @@ def format_lot_match_message(
         
         # One line per color: "1x Black: $45.07 | 🟡161K | B003EHEKBG"
         for match in lot_result.individual_matches:
-            bsr_emoji, _ = get_bsr_emoji(match.bsr)
-            bsr_short = f"{match.bsr // 1000}K" if match.bsr and match.bsr >= 1000 else str(match.bsr or "N/A")
+            # Use current BSR for emoji colour; show current rank in compact form
+            bsr_for_emoji = match.bsr_current if match.bsr_current is not None else match.bsr
+            bsr_emoji, _ = get_bsr_emoji(bsr_for_emoji)
+            bsr_short = f"{bsr_for_emoji // 1000}K" if bsr_for_emoji and bsr_for_emoji >= 1000 else str(bsr_for_emoji or "N/A")
             sellable_mark = " ⛔" if not match.sellable else ""
             asin_link = f"<a href=\"https://amazon.com/d/{match.asin}\">{match.asin}</a>"
             lines.append(f"{match.quantity}x {match.color.capitalize()}: ${match.unit_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}")
@@ -1532,8 +1566,10 @@ def format_lot_match_message(
         lines.append("Sets:")
         
         for alt in lot_result.set_alternatives:
-            bsr_emoji, _ = get_bsr_emoji(alt.bsr)
-            bsr_short = f"{alt.bsr // 1000}K" if alt.bsr and alt.bsr >= 1000 else str(alt.bsr or "N/A")
+            # Use current BSR for emoji colour; show current rank in compact form
+            bsr_for_emoji = alt.bsr_current if alt.bsr_current is not None else alt.bsr
+            bsr_emoji, _ = get_bsr_emoji(bsr_for_emoji)
+            bsr_short = f"{bsr_for_emoji // 1000}K" if bsr_for_emoji and bsr_for_emoji >= 1000 else str(bsr_for_emoji or "N/A")
             sellable_mark = " ⛔" if not alt.sellable else ""
             asin_link = f"<a href=\"https://amazon.com/d/{alt.asin}\">{alt.asin}</a>"
 
@@ -1570,6 +1606,7 @@ def safe_send_media_group(msg: str, images: List[str]) -> None:
 
 
 def get_bsr_emoji(bsr_val: Optional[int]) -> Tuple[str, str]:
+    """Return (emoji, display_str) for a single BSR value (used for inline lot/set lines)."""
     if bsr_val is None:
         return "", "N/A"
     bsr_str = f"{bsr_val:,}"
@@ -1582,6 +1619,30 @@ def get_bsr_emoji(bsr_val: Optional[int]) -> Tuple[str, str]:
     else:
         emoji = "🔴"
     return emoji, bsr_str
+
+
+def format_bsr_display(bsr_current: Optional[int], bsr_avg: Optional[int]) -> str:
+    """
+    Format BSR for Telegram display as dual (current | 30d avg) when both are available.
+
+    - Both available:    "🟢 15,234 | 30d: 25,432"
+    - Only 30d avg:      "🟢 25,432 (30d avg)"
+    - Only current:      "🟢 15,234"
+    - Neither:           "N/A"
+
+    The emoji colour is driven by the current BSR (most relevant).
+    Falls back to the 30d avg for the emoji when only avg is present.
+    """
+    if bsr_current is not None and bsr_avg is not None:
+        emoji, _ = get_bsr_emoji(bsr_current)
+        return f"{emoji} {bsr_current:,} | 30d: {bsr_avg:,}"
+    if bsr_avg is not None:
+        emoji, _ = get_bsr_emoji(bsr_avg)
+        return f"{emoji} {bsr_avg:,} (30d avg)"
+    if bsr_current is not None:
+        emoji, _ = get_bsr_emoji(bsr_current)
+        return f"{emoji} {bsr_current:,}"
+    return "N/A"
 
 
 def get_profit_emoji(profit: float, sellable: bool, target_profit: float = None) -> str:
@@ -1708,7 +1769,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
             net_cost     = calculate_effective_net(raw_net, amazon_price, overhead_pct)
             profit       = net_cost - total_sale
             profit_margin_pct = (profit / net_cost * 100) if net_cost > 0 else 0.0
-            bsr_emoji, bsr = get_bsr_emoji(match["BSR"])
+            bsr_display  = format_bsr_display(match.get("BSR_current"), match["BSR"])
             prof_emoji   = get_profit_emoji(profit, match["sellable"], cached_target_profit)
             sellable_str = "🟩 Yes" if match["sellable"] else "⛔ No"
 
@@ -1716,7 +1777,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                 "Product Match\n"
                 f"Title: Canon {match['model']} {match['variant']}\n"
                 f"ASIN: <a href=\"https://amazon.com/d/{match['ASIN']}\">{match['ASIN']}</a>\n"
-                f"BSR: {bsr_emoji} {bsr} | Sellable: {sellable_str}\n"
+                f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
                 f"Net: ${net_cost:.2f}\n"
                 f"Profit: {prof_emoji} ${profit:.2f} ({profit_margin_pct:.1f}%)\n"
             )
@@ -1757,14 +1818,14 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                 if alts:
                     msg += "\nAlternative Match(s):\n"
                     for alt in alts:
-                        alt_emoji, alt_bsr   = get_bsr_emoji(alt["BSR"])
+                        alt_bsr_display      = format_bsr_display(alt.get("BSR_current"), alt["BSR"])
                         alt_prof_emoji       = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"], cached_target_profit)
                         alt_sellable_str = "🟩 Yes" if alt["unit_sellable"] else "⛔ No"
                         alt_margin_pct = (alt["unit_profit"] / alt["unit_net"] * 100) if alt["unit_net"] > 0 else 0.0
                         msg += (
                             f"Title: Canon {alt['model']} {alt['variant']}\n"
                             f"ASIN: <a href=\"https://amazon.com/d/{alt['ASIN']}\">{alt['ASIN']}</a>\n"
-                            f"BSR: {alt_emoji} {alt_bsr} | Sellable: {alt_sellable_str}\n"
+                            f"BSR: {alt_bsr_display} | Sellable: {alt_sellable_str}\n"
                             f"Net: ${alt['unit_net']:.2f}\n"
                             f"Profit: {alt_prof_emoji} ${alt['unit_profit']:.2f} ({alt_margin_pct:.1f}%)\n\n"
                         )
@@ -1861,14 +1922,14 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                     if alts:
                         msg += "\nAlternative Match(s):\n"
                         for alt in alts:
-                            alt_emoji, alt_bsr = get_bsr_emoji(alt["BSR"])
+                            alt_bsr_display = format_bsr_display(alt.get("BSR_current"), alt["BSR"])
                             alt_prof = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"], cached_target_profit)
                             alt_sellable_str = "🟩 Yes" if alt["unit_sellable"] else "⛔ No"
                             alt_margin_pct = (alt["unit_profit"] / alt["unit_net"] * 100) if alt["unit_net"] > 0 else 0.0
                             msg += (
                                 f"Title: Canon {alt['model']} {alt['variant']}\n"
                                 f"ASIN: <a href=\"https://amazon.com/d/{alt['ASIN']}\">{alt['ASIN']}</a>\n"
-                                f"BSR: {alt_emoji} {alt_bsr} | Sellable: {alt_sellable_str}\n"
+                                f"BSR: {alt_bsr_display} | Sellable: {alt_sellable_str}\n"
                                 f"Net: ${alt['unit_net']:.2f}\n"
                                 f"Profit: {alt_prof} ${alt['unit_profit']:.2f} ({alt_margin_pct:.1f}%)\n\n"
                             )

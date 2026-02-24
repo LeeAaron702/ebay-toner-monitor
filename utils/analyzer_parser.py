@@ -23,6 +23,7 @@ import pandas as pd
 ASIN_COLUMN = "ASIN"
 SELLER_PROCEEDS_COLUMN = "Seller Proceeds"  # This is what we actually get paid after Amazon fees
 BUYBOX_COLUMN = "Buybox Landed"  # Current daily Amazon sale price for overhead calculation
+BSR_CURRENT_COLUMN = "Sales Rank"
 BSR_30D_COLUMN = "Avg Sales Rank 30d"
 BSR_90D_COLUMN = "Avg Sales Rank 90d"
 NEW_FBA_OFFERS_COLUMN = "New FBA Offers"
@@ -84,11 +85,19 @@ def parse_analyzer_excel(filepath: str) -> List[Dict[str, Any]]:
             except (ValueError, TypeError):
                 pass
         
-        # Extract BSR (prefer 30d, fallback to 90d)
+        # Extract current BSR (from "Sales Rank" column)
+        bsr_current = row.get(BSR_CURRENT_COLUMN)
+        if pd.notna(bsr_current):
+            try:
+                metric["bsr_current"] = int(float(bsr_current))
+            except (ValueError, TypeError):
+                pass
+
+        # Extract BSR 30d average (prefer 30d, fallback to 90d)
         bsr = row.get(BSR_30D_COLUMN)
         if pd.isna(bsr):
             bsr = row.get(BSR_90D_COLUMN)
-        
+
         if pd.notna(bsr):
             try:
                 metric["bsr"] = int(float(bsr))

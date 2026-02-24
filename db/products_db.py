@@ -69,6 +69,7 @@ def init_products_db():
                 net_cost REAL,
                 amazon_price REAL,
                 bsr INTEGER,
+                bsr_current INTEGER,
                 sellable INTEGER DEFAULT 1,
                 
                 -- User annotations
@@ -106,6 +107,10 @@ def init_products_db():
         # Migration: add amazon_price column if it doesn't exist
         if 'amazon_price' not in columns:
             conn.execute(f'ALTER TABLE {PRODUCTS_TABLE} ADD COLUMN amazon_price REAL')
+
+        # Migration: add bsr_current column if it doesn't exist
+        if 'bsr_current' not in columns:
+            conn.execute(f'ALTER TABLE {PRODUCTS_TABLE} ADD COLUMN bsr_current INTEGER')
         
         # Create settings table
         conn.execute(f'''
@@ -756,6 +761,8 @@ def bulk_update_metrics(metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
                         updates['amazon_price'] = m['amazon_price']
                     if 'bsr' in m and m['bsr'] is not None:
                         updates['bsr'] = m['bsr']
+                    if 'bsr_current' in m and m['bsr_current'] is not None:
+                        updates['bsr_current'] = m['bsr_current']
                     if 'sellable' in m and m['sellable'] is not None:
                         updates['sellable'] = 1 if m['sellable'] else 0
                     
@@ -834,7 +841,8 @@ def get_canon_products() -> pd.DataFrame:
     # Rename columns to match Canon engine expectations
     column_map = {
         'asin': 'ASIN',
-        'bsr': 'BSR', 
+        'bsr': 'BSR',
+        'bsr_current': 'BSR_current',
         'net_cost': 'net',
         'variant_label': 'variant',
     }
