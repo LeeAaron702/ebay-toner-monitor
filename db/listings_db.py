@@ -495,6 +495,63 @@ def get_order_stats_for_time_range(start_time: str, end_time: str) -> List[Dict[
 	return [dict(row) for row in rows]
 
 
+def get_order_item_match_counts(start_time: str, end_time: str) -> List[Dict[str, Any]]:
+	"""
+	Get item counts and match counts per account for a time range.
+	
+	Returns:
+		List of dicts with 'account_label', 'total_items', 'matched_items'
+	"""
+	conn = get_db_connection()
+	conn.row_factory = sqlite3.Row
+	cur = conn.cursor()
+	cur.execute(f'''
+		SELECT 
+			account_label,
+			COUNT(*) as total_items,
+			SUM(CASE WHEN match1_asin IS NOT NULL AND match1_asin != '' THEN 1 ELSE 0 END) as matched_items
+		FROM {ORDER_HISTORY_TABLE}
+		WHERE REPLACE(created_time, ' PST', '') >= ?
+		  AND REPLACE(created_time, ' PST', '') < ?
+		GROUP BY account_label
+	''', (start_time, end_time))
+	rows = cur.fetchall()
+	conn.close()
+	return [dict(row) for row in rows]
+
+
+def get_order_items_for_time_range(start_time: str, end_time: str) -> List[Dict[str, Any]]:
+	"""
+	Get individual order items with match details for a time range.
+	Used for the 5 PM end-of-day detailed report.
+	
+	Returns:
+		List of dicts with item_title, transaction_price, quantity_purchased,
+		account_label, and match1-4 asin/profit fields.
+	"""
+	conn = get_db_connection()
+	conn.row_factory = sqlite3.Row
+	cur = conn.cursor()
+	cur.execute(f'''
+		SELECT 
+			account_label,
+			item_title,
+			transaction_price,
+			quantity_purchased,
+			match1_asin, match1_profit,
+			match2_asin, match2_profit,
+			match3_asin, match3_profit,
+			match4_asin, match4_profit
+		FROM {ORDER_HISTORY_TABLE}
+		WHERE REPLACE(created_time, ' PST', '') >= ?
+		  AND REPLACE(created_time, ' PST', '') < ?
+		ORDER BY account_label, created_time
+	''', (start_time, end_time))
+	rows = cur.fetchall()
+	conn.close()
+	return [dict(row) for row in rows]
+
+
 # ============================================================================
 # PURCHASED UNITS TABLE FUNCTIONS
 # ============================================================================

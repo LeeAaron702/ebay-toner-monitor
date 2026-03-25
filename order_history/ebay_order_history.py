@@ -21,6 +21,8 @@ from db.listings_db import (
     upsert_order_history,
     get_daily_order_stats,
     get_order_stats_for_time_range,
+    get_order_item_match_counts,
+    get_order_items_for_time_range,
     expand_order_to_purchased_units,
     insert_purchased_units_batch,
 )
@@ -991,6 +993,9 @@ def send_stats_report(report_hour: int, start_hour: int) -> None:
     """
     Send order stats to Telegram for a specific time range.
     
+    9 AM / 12 PM: Compact summary with order count, spend, matched vs unmatched items.
+    5 PM: Full day summary (12 AM - 5 PM) with item-level purchase list and ASINs.
+    
     Args:
         report_hour: The hour when this report is sent (9, 12, or 17)
         start_hour: The starting hour of the time range (0, 9, or 12)
@@ -998,58 +1003,156 @@ def send_stats_report(report_hour: int, start_hour: int) -> None:
     now_pst = datetime.now(PST)
     date_str = now_pst.strftime("%Y-%m-%d")
     
+    is_end_of_day = (report_hour == 17)
+    
     # Build time range strings
-    start_time = f"{date_str} {start_hour:02d}:00:00"
+    # For 5 PM report, cover the full day (12 AM - 5 PM)
+    effective_start = 0 if is_end_of_day else start_hour
+    start_time = f"{date_str} {effective_start:02d}:00:00"
     end_time = f"{date_str} {report_hour:02d}:00:00"
     
-    # Format times for display (12-hour format)
-    start_display = datetime.strptime(f"{start_hour:02d}:00", "%H:%M").strftime("%I:%M %p").lstrip("0")
+    # Format times for display
+    start_display = datetime.strptime(f"{effective_start:02d}:00", "%H:%M").strftime("%I:%M %p").lstrip("0")
     end_display = datetime.strptime(f"{report_hour:02d}:00", "%H:%M").strftime("%I:%M %p").lstrip("0")
-    
-    # Handle midnight display
-    if start_hour == 0:
+    if effective_start == 0:
         start_display = "12:00 AM"
-    
     time_range_display = f"{start_display} - {end_display}"
     
     # Get stats from database
     stats = get_order_stats_for_time_range(start_time, end_time)
+    match_counts = get_order_item_match_counts(start_time, end_time)
     
-    # Build message
-    lines = [f"Order Stats ({time_range_display})", ""]
+    # Build header
+    header = "📊 Daily Summary" if is_end_of_day else "📊 Order Stats"
+    lines = [f"{header} ({time_range_display})", ""]
     
     total_orders = 0
     total_spent = 0.0
     
-    # Process each account (use eBay usernames as stored in DB)
     for account_label in ["buyinko_11", "surplusink"]:
         display_name = ACCOUNT_DISPLAY_NAMES.get(account_label, account_label)
         
-        # Find stats for this account
+        # Order count and spend
         account_stats = next((s for s in stats if s["account_label"] == account_label), None)
-        
-        if account_stats:
-            order_count = account_stats["order_count"]
-            spent = account_stats["total_spent"]
-        else:
-            order_count = 0
-            spent = 0.0
+        order_count = account_stats["order_count"] if account_stats else 0
+        spent = account_stats["total_spent"] if account_stats else 0.0
         
         total_orders += order_count
         total_spent += spent
         
         lines.append(f"{display_name}")
-        lines.append(f"  Orders: {order_count}")
-        lines.append(f"  Spent: ${spent:.2f}")
+        lines.append(f"  Orders: {order_count} | Spent: ${spent:.2f}")
+        
+        # Match counts (skip if no orders)
+        if order_count > 0:
+            acct_matches = next((m for m in match_counts if m["account_label"] == account_label), None)
+            total_items = acct_matches["total_items"] if acct_matches else 0
+            matched_items = acct_matches["matched_items"] if acct_matches else 0
+            lines.append(f"  Matched: {matched_items}/{total_items} items")
+        
         lines.append("")
     
+    # Total line
     lines.append(f"Total: {total_orders} orders, ${total_spent:.2f}")
     
-    message = "\n".join(lines)
+    # For 5 PM report, append item-level detail
+    if is_end_of_day and total_orders > 0:
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("📦 Purchases Today")
+        
+        for account_label in ["buyinko_11", "surplusink"]:
+            acct_items = [i for i in items if i["account_label"] == account_label]
+            if not acct_items:
+                continue
+            
+            display_name = ACCOUNT_DISPLAY_NAMES.get(account_label, account_label)
+            lines.append("")
+            lines.append(f"━━ {display_name} ━━")
+            lines.append("")
+            
+            for item in acct_items:
+                title = item["item_title"] or "Unknown Item"
+                # Escape HTML special chars in title since we use HTML parse mode
+                title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                price = item["transaction_price"] or "0.00"
+                qty = item["quantity_purchased"] or "1"
+                
+                qty_suffix = f"{qty}x | " if str(qty) != "1" else ""
+                
+                lines.append(title)
+                lines.append(f"{qty_suffix}${price}")
+                
+                # Collect all distinct ASINs from match1-4
+                asins = []
+                for i in range(1, 5):
+                    asin = item.get(f"match{i}_asin")
+                    if asin and asin.strip() and asin not in asins:
+                        asins.append(asin)
+                
+                if asins:
+                    asin_links = [f'<a href="https://www.amazon.com/dp/{a}">{a}</a>' for a in asins]
+                    lines.append(", ".join(asin_links))
+                else:
+                    lines.append("No match found")
+                
+                lines.append("")
     
-    # Send to Telegram
-    debug(f"Sending stats report for {time_range_display}")
-    send_telegram_message(message)
+    # Split into multiple messages if needed to avoid Telegram truncation
+    # Build the summary section (always send first)
+    # Then build the purchases section separately if it exists
+    summary_end_idx = None
+    for idx, line in enumerate(lines):
+        if line == "📦 Purchases Today":
+            summary_end_idx = idx - 2  # Before the separator
+            break
+    
+    if summary_end_idx is not None and is_end_of_day:
+        # Send summary as first message
+        summary_message = "\n".join(lines[:summary_end_idx + 1])
+        debug(f"Sending stats summary for {time_range_display}")
+        send_telegram_message(summary_message)
+        
+        # Send purchases as separate message(s) per account
+        for account_label in ["buyinko_11", "surplusink"]:
+            acct_items = [i for i in items if i["account_label"] == account_label]
+            if not acct_items:
+                continue
+            
+            display_name = ACCOUNT_DISPLAY_NAMES.get(account_label, account_label)
+            acct_lines = [f"📦 {display_name} Purchases", ""]
+            
+            for item in acct_items:
+                item_title = item["item_title"] or "Unknown Item"
+                item_title = item_title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                price = item["transaction_price"] or "0.00"
+                qty = item["quantity_purchased"] or "1"
+                
+                qty_suffix = f"{qty}x | " if str(qty) != "1" else ""
+                
+                acct_lines.append(item_title)
+                acct_lines.append(f"{qty_suffix}${price}")
+                
+                asins = []
+                for i in range(1, 5):
+                    asin = item.get(f"match{i}_asin")
+                    if asin and asin.strip() and asin not in asins:
+                        asins.append(asin)
+                
+                if asins:
+                    asin_links = [f'<a href="https://www.amazon.com/dp/{a}">{a}</a>' for a in asins]
+                    acct_lines.append(", ".join(asin_links))
+                else:
+                    acct_lines.append("No match found")
+                
+                acct_lines.append("")
+            
+            acct_message = "\n".join(acct_lines)
+            send_telegram_message(acct_message)
+    else:
+        message = "\n".join(lines)
+        debug(f"Sending stats report for {time_range_display}")
+        send_telegram_message(message)
     debug("Stats report sent.")
 
 

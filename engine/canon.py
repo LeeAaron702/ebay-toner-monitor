@@ -86,8 +86,7 @@ class ColorMatch:
     unit_net: float
     subtotal: float
     asin: str
-    bsr: Optional[int] = None          # 30d average BSR
-    bsr_current: Optional[int] = None  # Current BSR
+    bsr: Optional[int] = None
     sellable: bool = True
 
 
@@ -101,8 +100,7 @@ class SetAlternative:
     unit_net: float
     total_net: float
     asin: str
-    bsr: Optional[int] = None          # 30d average BSR
-    bsr_current: Optional[int] = None  # Current BSR
+    bsr: Optional[int] = None
     sellable: bool = True
     leftover_units: int = 0  # Units that don't fit in sets
 
@@ -295,13 +293,11 @@ def fetch_details(item_id: str, token: str) -> Dict[str, Any]:
         "description": raw_description,
     }
 def fmt_time(raw: str) -> str:
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
-        try:
-            dt = datetime.strptime(raw, fmt)
-            return utc.localize(dt).astimezone(LOCAL_TZ).strftime("%b %d %Y, %I:%M %p %Z")
-        except ValueError:
-            continue
-    return "Unknown"
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S.%fZ")
+        return utc.localize(dt).astimezone(LOCAL_TZ).strftime("%b %d %Y, %I:%M %p")
+    except:
+        return "Unknown"
 
 
 # ─── Matching helpers ───────────────────────────────────────────────────────
@@ -320,6 +316,7 @@ def extract_model(title: str, models: List[str]) -> Tuple[Optional[str], Optiona
         (r'\bCRTDG[- ]?(\d{2,4}[A-Z]?)(BK|C|M|Y|K)?\b', 'CRTDG'),       # CRTDG051H, CRTDG051HBK
         (r'\bCartridge[- ]?(\d{2,4}[A-Z]?)(BK|C|M|Y|K)?\b', 'Cartridge'), # Cartridge 051H, Cartridge-051HBK
         (r'\bCRG[- ]?(\d{2,4}[A-Z]?)(BK|C|M|Y|K)?\b', 'CRG'),           # CRG137, CRG137BK
+        (r'\bCart[- ]?(\d{2,4}[A-Z]?)(BK|C|M|Y|K)?\b', 'Cart'),          # Cart055, Cart055Y
     ]
     
     cmap = {"C": "Cyan", "M": "Magenta", "Y": "Yellow", "K": "Black", "BK": "Black"}
@@ -538,6 +535,13 @@ def extract_lot_multiplier(title: str) -> Tuple[int, str]:
         if 2 <= num <= 10:  # Reasonable pack size
             return num, "high"
     
+    # Pattern 3b2: "X Boxes" - high confidence (like "3 Boxes Canon...")
+    m = re.search(r'\b(\d+)\s+box(?:es)?\b', t)
+    if m:
+        num = int(m.group(1))
+        if 2 <= num <= 20:
+            return num, "high"
+    
     # Pattern 3c: "Nx" or "NX" at start - e.g., "3x Sealed Canon 045"
     m = re.match(r'^(\d+)\s*x\s+', t)
     if m:
@@ -552,11 +556,11 @@ def extract_lot_multiplier(title: str) -> Tuple[int, str]:
         if 2 <= num <= 20:
             return num, "high"
     
-    # Pattern 4: Digit at start followed by space and Canon/model
-    m = re.match(r'^(\d+)\s+(?:canon|genuine|new|oem)\b', t)
+    # Pattern 4: Digit at start followed by space and Canon/model/brand word
+    m = re.match(r'^(\d+)\s+(?:canon|genuine|new|oem|original)\b', t)
     if m:
         num = int(m.group(1))
-        if 2 <= num <= 10:  # Reasonable lot size
+        if 2 <= num <= 20:  # Reasonable lot size
             return num, "high"
     
     # Pattern 5: "xN" suffix - medium confidence (could be model)
@@ -628,6 +632,12 @@ def extract_color_quantities(title: str) -> Tuple[Dict[str, int], str, List[str]
             qty = int(qty_str)
             if qty <= 20:  # Reasonable quantity (not a model number)
                 colors[color] = colors.get(color, 0) + qty
+        # Also find non-parenthetical color mentions (e.g., "Cyan, Magenta, Yellow, (2)Black")
+        # Add any colors mentioned without explicit quantity as qty 1
+        all_colors_in_title = re.findall(r'\b(black|cyan|magenta|yellow)\b', t)
+        for c in set(all_colors_in_title):
+            if c not in colors:
+                colors[c] = 1
         if colors:
             return colors, "high", notes
     
@@ -963,6 +973,13 @@ def is_mixed_lot_listing(title: str) -> bool:
         if 2 <= num <= 10:  # Reasonable pack size
             return True
     
+    # Check for "X Boxes" (e.g., "3 Boxes Canon...")
+    m = re.search(r'\b(\d+)\s+box(?:es)?\b', t)
+    if m:
+        num = int(m.group(1))
+        if 2 <= num <= 20:
+            return True
+    
     # Check for explicit color quantities "5-YELLOW" or "(2) Yellow"
     # We need to be careful not to match model numbers like "Canon 045 Yellow"
     # Real quantity patterns:
@@ -1089,10 +1106,6 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
         except:
             bsr_val = None
         try:
-            bsr_current_val = int(float(str(row["BSR_current"]).replace(",", "")))
-        except:
-            bsr_current_val = None
-        try:
             net_val = float(row["net"])
         except:
             net_val = None
@@ -1108,7 +1121,6 @@ def match_listing(title: str, sheet_df: pd.DataFrame) -> Optional[Dict[str, Any]
             "color": row["color"],
             "ASIN": row["ASIN"],
             "BSR": bsr_val,
-            "BSR_current": bsr_current_val,
             "net": net_val,
             "amazon_price": amazon_price_val,
             "sellable": str(row["sellable"]).strip().lower() == "sellable",
@@ -1163,10 +1175,8 @@ def find_multi_pack_alternatives(
             mix_rows      = cand[cand['variant'].str.contains(r'\bMix\b',     case=False)]
 
             if capacity == 'High':
-                selection = high_rows.copy()
-                # if orig_color == 'black':
-                #     selection = pd.concat([selection, mix_rows]).drop_duplicates()
-                # The above logic for including 'Mix' variants is commented out as it is not working correctly and needs to be revisited later.
+                # Include both High and Mix variants for High capacity
+                selection = pd.concat([high_rows, mix_rows]).drop_duplicates()
             else:
                 selection = standard_rows.copy()
             cand = selection
@@ -1186,17 +1196,12 @@ def find_multi_pack_alternatives(
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
             except:
                 bsr_val = None
-            try:
-                bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
-            except:
-                bsr_current_val = None
 
             results.append({
                 'model':        row['model'],
                 'variant':      row['variant'],
                 'ASIN':         row['ASIN'],
                 'BSR':          bsr_val,
-                'BSR_current':  bsr_current_val,
                 'unit_net':     unit_net,
                 'unit_profit':  unit_profit,
                 'unit_sellable': True,
@@ -1241,6 +1246,16 @@ def calculate_lot_match(
         result.unmatched_colors = ["Unknown - could not parse lot"]
         return result
     
+    # ─── Capacity fallback helper ───────────────────────────────────────────
+    # Some products only exist as "Standard" in the sheet even though titles say
+    # "High Yield". If the exact capacity match fails, fall back to Standard.
+    def _capacity_candidates() -> list:
+        """Return list of capacities to try, in priority order."""
+        caps = [lot.capacity]
+        if lot.capacity in ("High", "Extra-High") and lot.capacity != "Standard":
+            caps.append("Standard")
+        return caps
+    
     # ─── SPLIT STRATEGY: Value if sold as singles ───────────────────────────
     individual_matches = []
     unmatched_colors = []
@@ -1249,12 +1264,17 @@ def calculate_lot_match(
     
     for color, qty in lot.color_quantities.items():
         # Find single-unit match for this model/capacity/color
-        cand = sheet_df[
-            (sheet_df['model'] == lot.model) &
-            (sheet_df['capacity'] == lot.capacity) &
-            (sheet_df['pack_size'] == 1) &
-            (sheet_df['color'].str.lower() == color.lower())
-        ]
+        # Try exact capacity first, then fall back to Standard
+        cand = pd.DataFrame()
+        for cap in _capacity_candidates():
+            cand = sheet_df[
+                (sheet_df['model'] == lot.model) &
+                (sheet_df['capacity'] == cap) &
+                (sheet_df['pack_size'] == 1) &
+                (sheet_df['color'].str.lower() == color.lower())
+            ]
+            if not cand.empty:
+                break
         
         if not cand.empty:
             row = cand.iloc[0]
@@ -1269,14 +1289,10 @@ def calculate_lot_match(
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
             except:
                 bsr_val = None
-            try:
-                bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
-            except:
-                bsr_current_val = None
-
+            
             # If not sellable, value is 0 for profit calculation
             effective_unit_net = unit_net if sellable else 0.0
-
+            
             match = ColorMatch(
                 color=color,
                 quantity=qty,
@@ -1284,7 +1300,6 @@ def calculate_lot_match(
                 subtotal=effective_unit_net * qty,
                 asin=row['ASIN'],
                 bsr=bsr_val,
-                bsr_current=bsr_current_val,
                 sellable=sellable,
             )
             individual_matches.append(match)
@@ -1314,23 +1329,26 @@ def calculate_lot_match(
                           color_qtys.get('magenta', 0),
                           color_qtys.get('yellow', 0))
         if min_cmyk_qty > 0:
-            # Find 4-pack in sheet - first get base candidates
-            cand_4pack = sheet_df[
-                (sheet_df['model'] == lot.model) &
-                (sheet_df['capacity'] == lot.capacity) &
-                (sheet_df['pack_size'] == 4) &
-                (sheet_df['color'].str.lower() == 'color')
-            ]
-            
-            # Apply variant filtering for High vs Standard capacity (like find_multi_pack_alternatives)
-            if lot.capacity == 'High':
-                high_rows = cand_4pack[cand_4pack['variant'].str.contains(r'\bHigh\b', case=False, na=False)]
-                if not high_rows.empty:
-                    cand_4pack = high_rows
-            elif lot.capacity == 'Standard':
-                standard_rows = cand_4pack[cand_4pack['variant'].str.contains(r'\bStandard\b', case=False, na=False)]
-                if not standard_rows.empty:
-                    cand_4pack = standard_rows
+            # Find 4-pack in sheet with capacity fallback
+            cand_4pack = pd.DataFrame()
+            for cap in _capacity_candidates():
+                cand_4pack = sheet_df[
+                    (sheet_df['model'] == lot.model) &
+                    (sheet_df['capacity'] == cap) &
+                    (sheet_df['pack_size'] == 4) &
+                    (sheet_df['color'].str.lower() == 'color')
+                ]
+                if not cand_4pack.empty:
+                    # Apply variant filtering for High vs Standard capacity
+                    if cap == 'High':
+                        high_rows = cand_4pack[cand_4pack['variant'].str.contains(r'\bHigh\b', case=False, na=False)]
+                        if not high_rows.empty:
+                            cand_4pack = high_rows
+                    elif cap == 'Standard':
+                        standard_rows = cand_4pack[cand_4pack['variant'].str.contains(r'\bStandard\b', case=False, na=False)]
+                        if not standard_rows.empty:
+                            cand_4pack = standard_rows
+                    break
             
             # Prefer sellable, but keep non-sellable if that's all we have
             sellable_4pack = cand_4pack[cand_4pack['sellable'].str.lower() == 'sellable']
@@ -1348,17 +1366,13 @@ def calculate_lot_match(
                     bsr_val = int(float(str(row['BSR']).replace(',', '')))
                 except:
                     bsr_val = None
-                try:
-                    bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
-                except:
-                    bsr_current_val = None
-
+                
                 # Calculate leftover units
                 leftover = sum(color_qtys.values()) - (min_cmyk_qty * 4)
-
+                
                 # If not sellable, value is 0
                 effective_total_net = (pack_net * min_cmyk_qty) if sellable else 0.0
-
+                
                 alt = SetAlternative(
                     pack_type="4 Color",
                     pack_size=4,
@@ -1368,25 +1382,42 @@ def calculate_lot_match(
                     total_net=effective_total_net,
                     asin=row['ASIN'],
                     bsr=bsr_val,
-                    bsr_current=bsr_current_val,
                     sellable=sellable,
                     leftover_units=leftover,
                 )
                 set_alternatives.append(alt)
     
-    # Try 3-color sets (CMY only)
-    if has_cmy:
-        min_cmy_qty = min(color_qtys.get('cyan', 0),
-                         color_qtys.get('magenta', 0),
-                         color_qtys.get('yellow', 0))
-        if min_cmy_qty > 0:
-            # Find 3-pack in sheet
-            cand_3pack = sheet_df[
-                (sheet_df['model'] == lot.model) &
-                (sheet_df['capacity'] == lot.capacity) &
-                (sheet_df['pack_size'] == 3) &
-                (sheet_df['color'].str.lower() == 'color')
-            ]
+    # Try 3-color sets (CMY or any 3 colors)
+    # Standard CMY: cyan + magenta + yellow
+    # Also try when exactly 3 distinct colors exist (e.g., black + cyan + yellow)
+    num_colors = len(color_qtys)
+    try_3pack = has_cmy or num_colors == 3
+    
+    if try_3pack:
+        if has_cmy:
+            min_3_qty = min(color_qtys.get('cyan', 0),
+                           color_qtys.get('magenta', 0),
+                           color_qtys.get('yellow', 0))
+            pack_label = "3 Color (CMY)"
+        else:
+            # Any 3 colors — use the minimum qty across all
+            min_3_qty = min(color_qtys.values())
+            color_abbrev = {"black": "B", "cyan": "C", "magenta": "M", "yellow": "Y"}
+            color_list = "".join(color_abbrev.get(c, c[0].upper()) for c in sorted(color_qtys.keys()))
+            pack_label = f"3 Color ({color_list})"
+        
+        if min_3_qty > 0:
+            # Find 3-pack in sheet with capacity fallback
+            cand_3pack = pd.DataFrame()
+            for cap in _capacity_candidates():
+                cand_3pack = sheet_df[
+                    (sheet_df['model'] == lot.model) &
+                    (sheet_df['capacity'] == cap) &
+                    (sheet_df['pack_size'] == 3) &
+                    (sheet_df['color'].str.lower() == 'color')
+                ]
+                if not cand_3pack.empty:
+                    break
             
             # Prefer sellable
             sellable_3pack = cand_3pack[cand_3pack['sellable'].str.lower() == 'sellable']
@@ -1404,25 +1435,20 @@ def calculate_lot_match(
                     bsr_val = int(float(str(row['BSR']).replace(',', '')))
                 except:
                     bsr_val = None
-                try:
-                    bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
-                except:
-                    bsr_current_val = None
-
-                leftover = sum(color_qtys.values()) - (min_cmy_qty * 3)
-
-                effective_total_net = (pack_net * min_cmy_qty) if sellable else 0.0
-
+                
+                leftover = sum(color_qtys.values()) - (min_3_qty * 3)
+                
+                effective_total_net = (pack_net * min_3_qty) if sellable else 0.0
+                
                 alt = SetAlternative(
-                    pack_type="3 Color (CMY)",
+                    pack_type=pack_label,
                     pack_size=3,
-                    sets_needed=min_cmy_qty,
-                    total_units=min_cmy_qty * 3,
+                    sets_needed=min_3_qty,
+                    total_units=min_3_qty * 3,
                     unit_net=pack_net / 3,
                     total_net=effective_total_net,
                     asin=row['ASIN'],
                     bsr=bsr_val,
-                    bsr_current=bsr_current_val,
                     sellable=sellable,
                     leftover_units=leftover,
                 )
@@ -1433,12 +1459,16 @@ def calculate_lot_match(
         black_qty = color_qtys['black']
         sets_of_2 = black_qty // 2
         
-        cand_2pack = sheet_df[
-            (sheet_df['model'] == lot.model) &
-            (sheet_df['capacity'] == lot.capacity) &
-            (sheet_df['pack_size'] == 2) &
-            (sheet_df['color'].str.lower() == 'black')
-        ]
+        cand_2pack = pd.DataFrame()
+        for cap in _capacity_candidates():
+            cand_2pack = sheet_df[
+                (sheet_df['model'] == lot.model) &
+                (sheet_df['capacity'] == cap) &
+                (sheet_df['pack_size'] == 2) &
+                (sheet_df['color'].str.lower() == 'black')
+            ]
+            if not cand_2pack.empty:
+                break
         
         # Prefer sellable
         sellable_2pack = cand_2pack[cand_2pack['sellable'].str.lower() == 'sellable']
@@ -1456,15 +1486,11 @@ def calculate_lot_match(
                 bsr_val = int(float(str(row['BSR']).replace(',', '')))
             except:
                 bsr_val = None
-            try:
-                bsr_current_val = int(float(str(row['BSR_current']).replace(',', '')))
-            except:
-                bsr_current_val = None
-
+            
             leftover = black_qty % 2 + sum(v for k, v in color_qtys.items() if k != 'black')
-
+            
             effective_total_net = (pack_net * sets_of_2) if sellable else 0.0
-
+            
             alt = SetAlternative(
                 pack_type="2 Black",
                 pack_size=2,
@@ -1474,7 +1500,6 @@ def calculate_lot_match(
                 total_net=effective_total_net,
                 asin=row['ASIN'],
                 bsr=bsr_val,
-                bsr_current=bsr_current_val,
                 sellable=sellable,
                 leftover_units=leftover,
             )
@@ -1531,32 +1556,28 @@ def format_lot_match_message(
         lines.append(f"⚠️ {'; '.join(lot.confidence_notes)}")
     
     # ─── SPLIT STRATEGY ─────────────────────────────────────────────────────
+    model_prefix = f"{lot.model} " if lot.model else ""
     if lot_result.individual_matches:
         lines.append("")
         lines.append("Singles:")
         
-        # One line per color: "1x Black: $45.07 | 🟡161K | B003EHEKBG"
         for match in lot_result.individual_matches:
-            # Use current BSR for emoji colour; show current rank in compact form
-            bsr_for_emoji = match.bsr_current if match.bsr_current is not None else match.bsr
-            bsr_emoji, _ = get_bsr_emoji(bsr_for_emoji)
-            bsr_short = f"{bsr_for_emoji // 1000}K" if bsr_for_emoji and bsr_for_emoji >= 1000 else str(bsr_for_emoji or "N/A")
+            bsr_emoji, _ = get_bsr_emoji(match.bsr)
+            bsr_short = f"{match.bsr // 1000}K" if match.bsr and match.bsr >= 1000 else str(match.bsr or "N/A")
             sellable_mark = " ⛔" if not match.sellable else ""
             asin_link = f"<a href=\"https://amazon.com/d/{match.asin}\">{match.asin}</a>"
-            lines.append(f"{match.quantity}x {match.color.capitalize()}: ${match.unit_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}")
-
-        # Singles summary - Value, Profit, Unmatched
+            lines.append(f"{match.quantity}x {model_prefix}{match.color.capitalize()}: ${match.unit_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}")
+        
         lines.append(f"Value: ${lot_result.total_net_if_split:.2f}")
-
+        
         profit = lot_result.profit_if_split
         profit_pct = (profit / lot_result.total_net_if_split * 100) if lot_result.total_net_if_split > 0 else 0
         unit_profit = profit / lot.total_units if lot.total_units > 0 else 0
         is_profitable = unit_profit >= target_profit
         profit_emoji = "💰" if is_profitable else ""
-
+        
         lines.append(f"Profit: {profit_emoji}${profit:.2f} ({profit_pct:.1f}%) | unit: ${unit_profit:.2f}")
-
-        # Show unmatched colors under Singles section
+        
         if lot_result.has_unmatched_colors:
             lines.append(f"Unmatched: {', '.join(lot_result.unmatched_colors)}")
     
@@ -1566,24 +1587,22 @@ def format_lot_match_message(
         lines.append("Sets:")
         
         for alt in lot_result.set_alternatives:
-            # Use current BSR for emoji colour; show current rank in compact form
-            bsr_for_emoji = alt.bsr_current if alt.bsr_current is not None else alt.bsr
-            bsr_emoji, _ = get_bsr_emoji(bsr_for_emoji)
-            bsr_short = f"{bsr_for_emoji // 1000}K" if bsr_for_emoji and bsr_for_emoji >= 1000 else str(bsr_for_emoji or "N/A")
+            bsr_emoji, _ = get_bsr_emoji(alt.bsr)
+            bsr_short = f"{alt.bsr // 1000}K" if alt.bsr and alt.bsr >= 1000 else str(alt.bsr or "N/A")
             sellable_mark = " ⛔" if not alt.sellable else ""
             asin_link = f"<a href=\"https://amazon.com/d/{alt.asin}\">{alt.asin}</a>"
-
-            leftover_str = f" (Color and leftover amount)" if alt.leftover_units > 0 else ""
-            lines.append(f"{alt.sets_needed}x {alt.pack_type}: ${alt.total_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}{leftover_str}")
-
-            # Per-set profit calculation
-            set_value = alt.total_net
-            if alt.leftover_units > 0 and lot_result.individual_matches:
-                avg_single = lot_result.total_net_if_split / lot.total_units if lot.total_units > 0 else 0
-                set_value += avg_single * alt.leftover_units
-            alt_profit = set_value - lot_result.total_sale_price
-            alt_profit_pct = (alt_profit / set_value * 100) if set_value > 0 else 0
-            alt_unit_profit = alt_profit / lot.total_units if lot.total_units > 0 else 0
+            
+            # Leftover detail: show count and what remains
+            leftover_str = ""
+            if alt.leftover_units > 0:
+                leftover_str = f" (+{alt.leftover_units} leftover)"
+            
+            lines.append(f"{alt.sets_needed}x {model_prefix}{alt.pack_type}: ${alt.total_net:.2f} | {bsr_emoji}{bsr_short} | {asin_link}{sellable_mark}{leftover_str}")
+            
+            # Per-alternative profit
+            alt_profit = alt.total_net - lot_result.total_sale_price
+            alt_profit_pct = (alt_profit / alt.total_net * 100) if alt.total_net > 0 else 0
+            alt_unit_profit = alt_profit / alt.total_units if alt.total_units > 0 else 0
             is_profitable = alt_unit_profit >= target_profit
             profit_emoji = "💰" if is_profitable else ""
             lines.append(f"Profit: {profit_emoji}${alt_profit:.2f} ({alt_profit_pct:.1f}%) | unit: ${alt_unit_profit:.2f}")
@@ -1606,7 +1625,6 @@ def safe_send_media_group(msg: str, images: List[str]) -> None:
 
 
 def get_bsr_emoji(bsr_val: Optional[int]) -> Tuple[str, str]:
-    """Return (emoji, display_str) for a single BSR value (used for inline lot/set lines)."""
     if bsr_val is None:
         return "", "N/A"
     bsr_str = f"{bsr_val:,}"
@@ -1619,30 +1637,6 @@ def get_bsr_emoji(bsr_val: Optional[int]) -> Tuple[str, str]:
     else:
         emoji = "🔴"
     return emoji, bsr_str
-
-
-def format_bsr_display(bsr_current: Optional[int], bsr_avg: Optional[int]) -> str:
-    """
-    Format BSR for Telegram display as dual (current | 30d avg) when both are available.
-
-    - Both available:    "🟢 15,234 | 30d: 25,432"
-    - Only 30d avg:      "🟢 25,432 (30d avg)"
-    - Only current:      "🟢 15,234"
-    - Neither:           "N/A"
-
-    The emoji colour is driven by the current BSR (most relevant).
-    Falls back to the 30d avg for the emoji when only avg is present.
-    """
-    if bsr_current is not None and bsr_avg is not None:
-        emoji, _ = get_bsr_emoji(bsr_current)
-        return f"{emoji} {bsr_current:,} | 30d: {bsr_avg:,}"
-    if bsr_avg is not None:
-        emoji, _ = get_bsr_emoji(bsr_avg)
-        return f"{emoji} {bsr_avg:,} (30d avg)"
-    if bsr_current is not None:
-        emoji, _ = get_bsr_emoji(bsr_current)
-        return f"{emoji} {bsr_current:,}"
-    return "N/A"
 
 
 def get_profit_emoji(profit: float, sellable: bool, target_profit: float = None) -> str:
@@ -1731,7 +1725,7 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
 
         opts = it.get("buyingOptions", [])
         if "FIXED_PRICE" in opts:
-            sale_type = "Fixed Price" + (" (Best Offer)" if "BEST_OFFER" in opts else "")
+            sale_type = "Fixed Price Or Best Offer" if "BEST_OFFER" in opts else "Fixed Price"
         elif any(o in opts for o in ("AUCTION", "BID")):
             sale_type = "Auction"
         else:
@@ -1739,12 +1733,14 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
 
 
         msg = (
-            f"{title}\n\n"
-            f"{username} ({fb_score}, {fb_pct}%) | {listed_time}\n"
-            f'<a href="{url}">{item_id}</a>\n'
-            f"Type: {sale_type}\n"
+            f'<a href="{url}">{title}</a>\n\n'
+            f"Seller: {username} ({fb_score}, {fb_pct}%)\n"
+            f"{listed_time}\n"
+            f"{sale_type}\n\n"
             f"Qty: {dets.get('quantity')}\n"
-            f"${price_str} + ${ship_str} = ${total_str}\n\n"
+            f"Price: ${price_str}\n"
+            f"Shipping: ${ship_str}\n"
+            f"Total: ${total_str}\n\n"
         )
 
         # ─── Check if this is a mixed lot that needs special handling ───────
@@ -1769,21 +1765,21 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
             net_cost     = calculate_effective_net(raw_net, amazon_price, overhead_pct)
             profit       = net_cost - total_sale
             profit_margin_pct = (profit / net_cost * 100) if net_cost > 0 else 0.0
-            bsr_display  = format_bsr_display(match.get("BSR_current"), match["BSR"])
+            bsr_emoji, bsr = get_bsr_emoji(match["BSR"])
             prof_emoji   = get_profit_emoji(profit, match["sellable"], cached_target_profit)
             sellable_str = "🟩 Yes" if match["sellable"] else "⛔ No"
 
             msg += (
-                "Product Match\n"
+                "Match:\n"
                 f"Title: Canon {match['model']} {match['variant']}\n"
                 f"ASIN: <a href=\"https://amazon.com/d/{match['ASIN']}\">{match['ASIN']}</a>\n"
-                f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
+                f"BSR: {bsr_emoji} {bsr} | Sellable: {sellable_str}\n"
                 f"Net: ${net_cost:.2f}\n"
                 f"Profit: {prof_emoji} ${profit:.2f} ({profit_margin_pct:.1f}%)\n"
             )
             
             # Add notes if present (e.g., "DO NOT BUY", "known bad match")
-            if match.get("notes") and str(match["notes"]).strip().lower() not in ("none", ""):
+            if match.get("notes"):
                 msg += f"⚠️ Note: {match['notes']}\n"
 
             # Create lot_breakdown for single items to enable analytics
@@ -1818,14 +1814,14 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                 if alts:
                     msg += "\nAlternative Match(s):\n"
                     for alt in alts:
-                        alt_bsr_display      = format_bsr_display(alt.get("BSR_current"), alt["BSR"])
+                        alt_emoji, alt_bsr   = get_bsr_emoji(alt["BSR"])
                         alt_prof_emoji       = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"], cached_target_profit)
                         alt_sellable_str = "🟩 Yes" if alt["unit_sellable"] else "⛔ No"
                         alt_margin_pct = (alt["unit_profit"] / alt["unit_net"] * 100) if alt["unit_net"] > 0 else 0.0
                         msg += (
                             f"Title: Canon {alt['model']} {alt['variant']}\n"
                             f"ASIN: <a href=\"https://amazon.com/d/{alt['ASIN']}\">{alt['ASIN']}</a>\n"
-                            f"BSR: {alt_bsr_display} | Sellable: {alt_sellable_str}\n"
+                            f"BSR: {alt_emoji} {alt_bsr} | Sellable: {alt_sellable_str}\n"
                             f"Net: ${alt['unit_net']:.2f}\n"
                             f"Profit: {alt_prof_emoji} ${alt['unit_profit']:.2f} ({alt_margin_pct:.1f}%)\n\n"
                         )
@@ -1922,14 +1918,14 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
                     if alts:
                         msg += "\nAlternative Match(s):\n"
                         for alt in alts:
-                            alt_bsr_display = format_bsr_display(alt.get("BSR_current"), alt["BSR"])
+                            alt_emoji, alt_bsr = get_bsr_emoji(alt["BSR"])
                             alt_prof = get_profit_emoji(alt["unit_profit"], alt["unit_sellable"], cached_target_profit)
                             alt_sellable_str = "🟩 Yes" if alt["unit_sellable"] else "⛔ No"
                             alt_margin_pct = (alt["unit_profit"] / alt["unit_net"] * 100) if alt["unit_net"] > 0 else 0.0
                             msg += (
                                 f"Title: Canon {alt['model']} {alt['variant']}\n"
                                 f"ASIN: <a href=\"https://amazon.com/d/{alt['ASIN']}\">{alt['ASIN']}</a>\n"
-                                f"BSR: {alt_bsr_display} | Sellable: {alt_sellable_str}\n"
+                                f"BSR: {alt_emoji} {alt_bsr} | Sellable: {alt_sellable_str}\n"
                                 f"Net: ${alt['unit_net']:.2f}\n"
                                 f"Profit: {alt_prof} ${alt['unit_profit']:.2f} ({alt_margin_pct:.1f}%)\n\n"
                             )

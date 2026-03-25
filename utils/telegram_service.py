@@ -89,18 +89,23 @@ def register_handlers(app: Application) -> None:
 # ─────────────────────── Plain HTTP helpers (sync) ───────────────────────────
 # Used by engine/*.py to post albums/text to a fixed chat via raw Bot API.
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TELEGRAM_SEND_MIN_INTERVAL_SEC = 4
 TELEGRAM_MAX_RETRIES = 4
 
 _last_post_ts = 0.0
 
+def _get_bot_token() -> str | None:
+    """Read TELEGRAM_BOT_TOKEN lazily so load_dotenv() has time to run."""
+    return os.getenv("TELEGRAM_BOT_TOKEN")
+
+def _get_chat_id() -> str | None:
+    """Read TELEGRAM_CHAT_ID lazily so load_dotenv() has time to run."""
+    return os.getenv("TELEGRAM_CHAT_ID")
+
 def _require_env(require_chat: bool = False) -> None:
-    if not BOT_TOKEN:
+    if not _get_bot_token():
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
-    if require_chat and not CHAT_ID:
+    if require_chat and not _get_chat_id():
         raise RuntimeError("TELEGRAM_CHAT_ID is not set")
 
 def _chunked(iterable: Iterable[str], size: int) -> Iterable[List[str]]:
@@ -124,7 +129,7 @@ def _pace_outbound_post() -> None:
 
 def _post_telegram(method: str, payload: dict) -> requests.Response:
     _pace_outbound_post()
-    url = f"{BASE_URL}/{method}"
+    url = f"https://api.telegram.org/bot{_get_bot_token()}/{method}"
     return requests.post(url, json=payload, timeout=30)
 
 def _post_with_retries(method: str, payload: dict) -> dict:
@@ -226,7 +231,7 @@ def send_media_group_with_caption(caption: str, image_urls: List[str]) -> None:
                 obj["parse_mode"] = "HTML"
             media.append(obj)
 
-        payload = {"chat_id": CHAT_ID, "media": media}
+        payload = {"chat_id": _get_chat_id(), "media": media}
         try:
             _post_with_retries("sendMediaGroup", payload)
         except Exception as ex:
@@ -265,7 +270,7 @@ def send_telegram_message(text: str) -> None:
                 msg_part = f"(Part {part_num})\n\n{msg_part}" if part_num > 1 else msg_part
                 part_num += 1
         
-        payload = {"chat_id": CHAT_ID, "text": msg_part, "parse_mode": "HTML"}
+        payload = {"chat_id": _get_chat_id(), "text": msg_part, "parse_mode": "HTML"}
         try:
             _post_with_retries("sendMessage", payload)
         except Exception as ex:

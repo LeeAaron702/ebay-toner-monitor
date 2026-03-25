@@ -337,9 +337,10 @@ def _format_currency(value: Optional[float]) -> str:
 def _sale_type(listing: Dict[str, Any]) -> str:
     buying_opts = listing.get("buyingOptions", [])
     if "FIXED_PRICE" in buying_opts:
-        label = "Fixed Price"
         if "BEST_OFFER" in buying_opts:
-            label += " (Best Offer)"
+            label = "Fixed Price Or Best Offer"
+        else:
+            label = "Fixed Price"
         return label
     if any(opt in buying_opts for opt in ("AUCTION", "BID")):
         return "Auction"
@@ -538,13 +539,13 @@ def build_listing_message(
     sale_type = _sale_type(listing)
     quantity = details.get("quantity") or "N/A"
 
+    title = listing.get('title', '<missing title>')
     msg = (
-        f"{listing.get('title', '<missing title>')}\n\n"
-        f"Seller: {username}  Feedback: {fb_score}, {fb_pct}%\n\n"
-        f"Listed: {listed_time}\n"
-        f"Link: <a href=\"{url}\">{item_id}</a>\n\n"
-        f"Type: {sale_type}\n\n"
-        f"Quantity: {quantity}\n"
+        f'<a href="{url}">{title}</a>\n\n'
+        f"Seller: {username} ({fb_score}, {fb_pct}%)\n"
+        f"{listed_time}\n"
+        f"{sale_type}\n\n"
+        f"Qty: {quantity}\n"
         f"Price: ${price_str}\n"
         f"Shipping: ${ship_str}\n"
         f"Total: ${total_str}\n\n"
@@ -576,13 +577,21 @@ def build_listing_message(
                 }
             )
 
+    import math
     variant_summaries: List[Dict[str, Any]] = []
     for entry in variant_entries:
         net_cost = entry["net_cost"]
         amazon_price = entry.get("amazon_price")
+        # Guard against NaN values from pandas
+        if isinstance(net_cost, float) and math.isnan(net_cost):
+            net_cost = None
+        if isinstance(amazon_price, float) and math.isnan(amazon_price):
+            amazon_price = None
         # Apply overhead deduction to get effective net
         if isinstance(net_cost, (int, float)):
             effective_net = calculate_effective_net(net_cost, amazon_price, overhead_pct)
+            if isinstance(effective_net, float) and math.isnan(effective_net):
+                effective_net = net_cost
             profit = effective_net - total_sale
         else:
             effective_net = None
@@ -632,7 +641,7 @@ def build_listing_message(
             primary.get("part_number"), primary.get("variant_label")
         )
         msg += (
-            "Product Match\n"
+            "Match:\n"
             f"Title: {title_line}\n"
             f"{_format_asin_line(primary.get('asin'))}\n"
             f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
@@ -670,7 +679,7 @@ def build_listing_message(
                     f"Profit: {alt_profit_emoji} {alt_profit_display}\n\n"
                 )
     else:
-        msg += "Product Match\nNo matching product found\n"
+        msg += "Match:\nNo matching product found\n"
 
     return msg, variant_summaries
 

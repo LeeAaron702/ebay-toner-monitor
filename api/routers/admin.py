@@ -226,9 +226,10 @@ async def products_page(
     offset = (page - 1) * per_page
     
     # Get products with filters (search now handled in SQL)
-    products = list_products(brand=brand, search=search, limit=per_page, offset=offset)
+    # Admin panel shows ALL products including not-sellable ones
+    products = list_products(brand=brand, search=search, limit=per_page, offset=offset, include_inactive=True)
     
-    total = count_products(brand=brand, search=search)
+    total = count_products(brand=brand, search=search, include_inactive=True)
     total_pages = (total + per_page - 1) // per_page
     
     # Check if HTMX request (partial render)

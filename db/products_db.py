@@ -234,8 +234,9 @@ def calculate_effective_net(net_cost: float, amazon_price: float, overhead_pct: 
     if overhead_pct is None:
         overhead_pct = get_overhead_pct()
     
-    if amazon_price is None or amazon_price <= 0:
-        # If no amazon_price, can't calculate overhead - return net_cost as-is
+    import math
+    if amazon_price is None or (isinstance(amazon_price, float) and math.isnan(amazon_price)) or amazon_price <= 0:
+        # If no amazon_price or NaN, can't calculate overhead - return net_cost as-is
         return net_cost
     
     overhead_amount = amazon_price * (overhead_pct / 100)

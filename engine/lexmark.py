@@ -83,6 +83,7 @@ PART_NUMBER_REGEX = re.compile(
 )
 
 
+
 def _log(message: str) -> None:
     """Log a message with engine prefix."""
     print(f"LOG - Lexmark.py - {message}")
@@ -252,39 +253,6 @@ def extract_part_number_candidates(title: Optional[str]) -> List[str]:
             candidates.append(normalized)
     
     return candidates
-
-
-def extract_title_quantity(title: str) -> int:
-    """Extract quantity multiplier from listing title. Returns 1 if no quantity detected."""
-    t = title.strip()
-
-    # Pattern priority order (most specific first):
-    patterns = [
-        (r'\b(\d+)\s*qty\.?\b', 1),           # "2 qty", "2 qty."
-        (r'\bqty\.?\s*(\d+)\b', 1),            # "qty 2", "qty. 2"
-        (r'\blot\s+of\s+(\d+)\b', 1),          # "Lot of 3"
-        (r'\bset\s+of\s+(\d+)\b', 1),          # "Set of 2"
-        (r'\b(\d+)\s*-?\s*(?:pack|pk)\b', 1),  # "2 Pack", "2-Pack", "2pk"
-        (r'^\s*\((\d+)\)\s*', 1),              # "(2) Lexmark..."
-        (r'^(\d+)\s+(?:lexmark|genuine|new|oem)\b', 1),  # "2 Lexmark..."
-        (r'\bx\s*(\d+)\b', 1),                 # "x2", "x 2"
-        (r'\b(\d+)\s*x\b', 1),                 # "2x", "2 x"
-    ]
-
-    for pattern, group in patterns:
-        m = re.search(pattern, t, re.IGNORECASE)
-        if m:
-            qty = int(m.group(group))
-            if 2 <= qty <= 20:  # Sanity check
-                return qty
-
-    # Word numbers
-    word_nums = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
-    for word, num in word_nums.items():
-        if re.search(rf'\b{word}\b', t, re.IGNORECASE):
-            return num
-
-    return 1
 
 
 def resolve_listing_variants(
@@ -476,7 +444,7 @@ def _sale_type(listing: Dict[str, Any]) -> str:
     if "FIXED_PRICE" in buying_opts:
         label = "Fixed Price"
         if "BEST_OFFER" in buying_opts:
-            label += " (Best Offer)"
+            label += " Or Best Offer"
         return label
     if any(opt in buying_opts for opt in ("AUCTION", "BID")):
         return "Auction"
@@ -495,29 +463,6 @@ def _bsr_marker(value: Optional[int]) -> Tuple[str, str]:
     if value < 500_000:
         return ("🟠", display)
     return ("🔴", display)
-
-
-def _format_bsr_display(bsr_current: Optional[int], bsr_avg: Optional[int]) -> str:
-    """
-    Format BSR as dual display (current | 30d avg) when both values are available.
-
-    - Both available:    "🟢 15,234 | 30d: 25,432"
-    - Only 30d avg:      "🟢 25,432 (30d avg)"
-    - Only current:      "🟢 15,234"
-    - Neither:           "N/A"
-
-    The emoji colour is driven by the current BSR; falls back to avg when only avg present.
-    """
-    if bsr_current is not None and bsr_avg is not None:
-        emoji, _ = _bsr_marker(bsr_current)
-        return f"{emoji} {bsr_current:,} | 30d: {bsr_avg:,}"
-    if bsr_avg is not None:
-        emoji, _ = _bsr_marker(bsr_avg)
-        return f"{emoji} {bsr_avg:,} (30d avg)"
-    if bsr_current is not None:
-        emoji, _ = _bsr_marker(bsr_current)
-        return f"{emoji} {bsr_current:,}"
-    return "N/A"
 
 
 def _profit_marker(profit: Optional[float], sellable: bool) -> str:
@@ -554,6 +499,104 @@ def _primary_variant_net_cost(variant_matches: List[Dict[str, Any]]) -> Optional
             if net_val is not None:
                 return net_val
     return None
+
+
+def _extract_lot_quantity(title: str) -> int:
+    """
+    Extract lot/multi-quantity from listing title.
+
+    Detects patterns like:
+    - "Lot of 3", "Lot of 4"
+    - "3 Boxes", "2 Pack"
+    - "x3", "x4"
+    - "(3)" at start
+    - Number words: "TWO", "THREE", etc.
+
+    Returns the detected quantity (1 if none detected).
+    """
+    if not title:
+        return 1
+
+    title_upper = title.upper().strip()
+
+    NUMBER_WORDS = {
+        "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5,
+        "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10,
+    }
+
+    # Named pack patterns: "Double Pack", "Triple Pack", "Dual Pack"
+    NAMED_PACKS = {
+        "DOUBLE": 2, "DUAL": 2, "TWIN": 2,
+        "TRIPLE": 3, "QUAD": 4, "QUADRUPLE": 4,
+    }
+    for word, val in NAMED_PACKS.items():
+        if re.search(rf'\b{word}\s+PACK\b', title_upper):
+            return val
+
+    # "Lot of X"
+    m = re.search(r'\bLOT\s+OF\s+(\d+)\b', title_upper)
+    if m:
+        return int(m.group(1))
+
+    # "Set of X" or "Set X" (e.g., "GENUINE SET 3 LEXMARK...")
+    m = re.search(r'\bSET\s+(?:OF\s+)?(\d+)\b', title_upper)
+    if m:
+        return int(m.group(1))
+
+    # "(X)" at start of title
+    m = re.match(r'^\((\d+)\)', title_upper)
+    if m:
+        return int(m.group(1))
+
+    # "X Boxes", "X Pack", "X Packs", "X-Pack"
+    m = re.search(r'\b(\d+)\s*[-]?\s*(?:BOXES|BOX|PACKS?)\b', title_upper)
+    if m:
+        return int(m.group(1))
+
+    # "xN" pattern (e.g., "x3", "x4") — only match small numbers to avoid model numbers like X725
+    m = re.search(r'(?<![A-Z/])X(\d{1,2})\b', title_upper)
+    if m:
+        val = int(m.group(1))
+        if 2 <= val <= 20:
+            return val
+
+    # Number words at start: "TWO Lexmark...", "THREE Lexmark..."
+    for word, val in NUMBER_WORDS.items():
+        if re.match(rf'^{word}\b', title_upper):
+            return val
+
+    return 1
+
+
+def _detect_set_listing(title: str, variant_entries: List[Dict]) -> Tuple[bool, int]:
+    """
+    Detect if a listing is a set/full set of toner cartridges.
+
+    Args:
+        title: eBay listing title
+        variant_entries: List of matched variant entry dicts
+
+    Returns:
+        Tuple of (is_set, num_matched_products)
+    """
+    if not title or not variant_entries:
+        return (False, 0)
+
+    title_upper = title.upper()
+    num_matched = len(variant_entries)
+
+    SET_KEYWORDS = {"SET", "FULL SET", "COMPLETE SET", "CMYK", "CMY"}
+    has_set_keyword = any(kw in title_upper for kw in SET_KEYWORDS)
+
+    # A set requires at least 2 matched products AND a keyword hint
+    if num_matched >= 2 and has_set_keyword:
+        return (True, num_matched)
+
+    # If 3+ matches, likely a set even without keyword
+    if num_matched >= 3:
+        return (True, num_matched)
+
+    return (False, num_matched)
 
 
 # ─── Telegram Integration ──────────────────────────────────────────────────────
@@ -694,21 +737,32 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
     sale_type = _sale_type(listing)
     quantity = details.get("quantity") or "N/A"
 
+    # Lot quantity detection
+    title = listing.get("title", "<missing title>")
+    lot_qty = _extract_lot_quantity(title)
+
+    # Detect if this is a set listing (multiple different part numbers)
+    is_set, num_matched = _detect_set_listing(title, matches)
+    
+    # For set listings, the "pack" count refers to the number of different items,
+    # not multiples of the same item. Reset lot_qty if set is detected.
+    if is_set and lot_qty == num_matched:
+        lot_qty = 1
+    
+    per_unit_price = total_sale / lot_qty if lot_qty > 1 else total_sale
+
     # Build message header
-    msg = (
-        f"{listing.get('title', '<missing title>')}\n\n"
-        f"Seller: {username}  Feedback: {fb_score}, {fb_pct}%\n\n"
-        f"Listed: {listed_time}\n"
-        f"Link: <a href=\"{url}\">{item_id}</a>\n\n"
-        f"Type: {sale_type}\n\n"
-        f"Quantity: {quantity}\n"
+    msg = f'<a href="{url}">{title}</a>\n\n'
+    msg += f"Seller: {username} ({fb_score}, {fb_pct}%)\n"
+    msg += f"{listed_time}\n"
+    msg += f"{sale_type}\n\n"
+
+    msg += (
+        f"Qty: {quantity}\n"
         f"Price: ${price_str}\n"
         f"Shipping: ${ship_str}\n"
         f"Total: ${total_str}\n\n"
     )
-
-    # Detect quantity from the listing title (e.g., "2 qty", "Lot of 3")
-    detected_qty = extract_title_quantity(listing.get("title", ""))
 
     # Process variant matches
     variant_entries: List[Dict[str, Any]] = []
@@ -730,43 +784,55 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
                 "model_family": variant.get("model_family"),
                 "capacity": variant.get("capacity"),
                 "pack_size": variant.get("pack_size"),
-                "bsr": _parse_bsr(variant.get("bsr")),
-                "bsr_current": _parse_bsr(variant.get("bsr_current")),
+                "bsr": variant.get("bsr"),
                 "notes": variant.get("notes"),
             })
 
-    # Only keep the first (exact) match - no alternatives
-    variant_entries = variant_entries[:1]
-
     # Calculate profit for each variant
+    import math
     variant_summaries: List[Dict[str, Any]] = []
     for entry in variant_entries:
         net_cost = entry["net_cost"]
         amazon_price = entry.get("amazon_price")
+        # Guard against NaN values from pandas
+        if isinstance(net_cost, float) and math.isnan(net_cost):
+            net_cost = None
+        if isinstance(amazon_price, float) and math.isnan(amazon_price):
+            amazon_price = None
         # Apply overhead deduction to get effective net
         if isinstance(net_cost, (int, float)) and net_cost > 0:
             effective_net = calculate_effective_net(net_cost, amazon_price, overhead_pct)
-            total_value = effective_net * detected_qty
-            profit = total_value - total_sale
-            per_unit_profit = effective_net - (total_sale / detected_qty) if detected_qty > 0 else 0
+            # Guard against NaN result (e.g. from NaN amazon_price)
+            if isinstance(effective_net, float) and math.isnan(effective_net):
+                effective_net = net_cost  # fallback to raw net
+            
+            if is_set:
+                # For sets: profit is calculated after summing all nets (deferred below)
+                profit = None  # Will be computed after all variants are processed
+            elif lot_qty > 1:
+                # For lots (same part × N): net applies to each unit, profit = net*qty - total
+                profit = (effective_net * lot_qty) - total_sale
+            else:
+                profit = effective_net - per_unit_price
         else:
             effective_net = None
-            total_value = None
             profit = None
-            per_unit_profit = None
-        margin = (
-            (profit / total_value * 100)
-            if profit is not None and total_value not in (None, 0)
-            else None
-        )
+        
+        if is_set:
+            margin = None  # Deferred
+        else:
+            margin = (
+                (profit / (effective_net * lot_qty if lot_qty > 1 else effective_net) * 100)
+                if profit is not None and effective_net not in (None, 0)
+                else None
+            )
         entry["profit"] = profit
         entry["effective_net"] = effective_net
         entry["margin_pct"] = margin
-        entry["per_unit_profit"] = per_unit_profit
         variant_summaries.append({
             "part_number": entry["part_number"],
-            "net": effective_net,  # Use effective net after overhead
-            "raw_net": net_cost,   # Original seller proceeds
+            "net": effective_net,
+            "raw_net": net_cost,
             "profit": profit,
             "margin_pct": margin,
             "sellable": entry["sellable"],
@@ -776,45 +842,100 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
             "bsr": entry.get("bsr"),
             "capacity": entry.get("capacity"),
             "pack_size": entry.get("pack_size"),
-            "detected_qty": detected_qty,
+            "is_alternative": False,
         })
 
-    # Add matching sheet data to message
-    if variant_entries:
-        primary = variant_entries[0]
-        effective_net = primary.get("effective_net")
-        profit = primary.get("profit")
-        per_unit_profit = primary.get("per_unit_profit")
-        margin = primary.get("margin_pct") or 0.0
-        profit_emoji = _profit_marker(profit, primary["sellable"])
-        sellable_str = "🟩 Yes" if primary["sellable"] else "⛔ No"
-        net_display = _format_currency(effective_net)
-        if profit is None:
-            profit_display = "N/A"
-        else:
-            profit_display = f"${profit:.2f} ({margin:.1f}%)"
-        title_line = _format_variant_title(primary.get("part_number"), primary.get("variant_label"))
-        bsr_display = _format_bsr_display(primary.get("bsr_current"), primary.get("bsr"))
-
-        msg += (
-            "Product Match\n"
-            f"Title: {title_line}\n"
-            f"{_format_asin_line(primary.get('asin'))}\n"
-            f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
-            f"Net: {net_display}\n"
-            f"Profit: {profit_emoji} {profit_display}\n"
+    # For set listings: compute combined profit (sum of all nets - total_sale)
+    if is_set and variant_entries:
+        combined_net = sum(
+            e.get("effective_net") or 0.0 for e in variant_entries
         )
+        combined_profit = combined_net - total_sale if combined_net > 0 else None
+        combined_margin = (combined_profit / combined_net * 100) if combined_profit is not None and combined_net > 0 else None
+        # Update each variant with the combined profit info
+        for entry, vs in zip(variant_entries, variant_summaries):
+            entry["profit"] = combined_profit
+            entry["margin_pct"] = combined_margin
+            vs["profit"] = combined_profit
+            vs["margin_pct"] = combined_margin
 
-        # Show quantity breakdown when a multi-unit lot is detected
-        if detected_qty > 1:
-            per_unit_cost = total_sale / detected_qty if detected_qty > 0 else 0
-            msg += f"Detected Qty: {detected_qty} | Per-Unit Cost: ${per_unit_cost:.2f}\n"
+    # Mark alternatives (first entry is primary, rest are alternatives)
+    for idx, vs in enumerate(variant_summaries):
+        vs["is_alternative"] = idx > 0
 
-        # Add notes if present (e.g., "DO NOT BUY", "known bad match")
-        if primary.get("notes") and str(primary["notes"]).strip().lower() not in ("none", ""):
-            msg += f"⚠️ Note: {primary['notes']}\n"
+    # ─── Helper to format a single match block ───
+    def _format_match_block(entry: Dict[str, Any], show_profit: bool = True) -> str:
+        eff_net = entry.get("effective_net")
+        prof = entry.get("profit")
+        mar = entry.get("margin_pct") or 0.0
+        p_emoji = _profit_marker(prof, entry["sellable"])
+        sell_str = "🟩 Yes" if entry["sellable"] else "⛔ No"
+        net_disp = _format_currency(eff_net)
+        if prof is None:
+            prof_disp = "N/A"
+        else:
+            prof_disp = f"${prof:.2f} ({mar:.1f}%)"
+        t_line = _format_variant_title(entry.get("part_number"), entry.get("variant_label"))
+        b_emoji, b_disp = _bsr_marker(entry.get("bsr"))
+        blk = (
+            f"Title: {t_line}\n"
+            f"{_format_asin_line(entry.get('asin'))}\n"
+            f"BSR: {b_emoji} {b_disp} | Sellable: {sell_str}\n"
+            f"Net: {net_disp}\n"
+        )
+        if show_profit:
+            blk += f"Profit: {p_emoji} {prof_disp}\n"
+        if entry.get("notes"):
+            blk += f"⚠️ Note: {entry['notes']}\n"
+        return blk
+
+    # ─── Build match section of message ───
+    if variant_entries:
+        # SET LISTING: multiple distinct part numbers in one listing
+        if is_set and len(variant_entries) >= 2:
+            msg += f"Set ({num_matched} items):\n"
+            combined_net = sum(e.get("effective_net") or 0.0 for e in variant_entries)
+            combined_profit = combined_net - total_sale if combined_net > 0 else None
+            combined_margin = (combined_profit / combined_net * 100) if combined_profit is not None and combined_net > 0 else None
+            
+            for entry in variant_entries:
+                msg += _format_match_block(entry, show_profit=False)
+                msg += "\n"
+            
+            # Combined profit summary
+            p_emoji = _profit_marker(combined_profit, True)
+            if combined_profit is not None:
+                msg += f"Combined Net: ${combined_net:.2f}\n"
+                msg += f"Profit: {p_emoji} ${combined_profit:.2f} ({combined_margin:.1f}%)\n"
+            else:
+                msg += "Profit: N/A\n"
+        
+        # LOT LISTING: same part number × N
+        elif lot_qty > 1:
+            msg += f"Match ({lot_qty}x):\n"
+            primary = variant_entries[0]
+            msg += _format_match_block(primary)
+
+            alternatives = variant_entries[1:]
+            if alternatives:
+                msg += "\nAlternative Match(s):\n"
+                for alt in alternatives:
+                    msg += _format_match_block(alt)
+        
+        # STANDARD: single match
+        else:
+            primary = variant_entries[0]
+            msg += "Match:\n"
+            msg += _format_match_block(primary)
+
+            alternatives = variant_entries[1:]
+            if alternatives:
+                msg += "\nAlternative Match(s):\n"
+                for alt in alternatives:
+                    msg += _format_match_block(alt)
+
     else:
-        msg += "Product Match\nNo matching product found\n"
+        msg += "Match:\nNo matching product found\n"
 
     return msg, variant_summaries
 
@@ -864,7 +985,6 @@ def _persist_processed_record(record: Dict[str, Any]) -> None:
             profit=summary.get("profit"),
             pack_size=summary.get("pack_size"),  # Now available from flattened sheet
             color=summary.get("color"),
-            total_units=summary.get("detected_qty") if (summary.get("detected_qty") or 1) > 1 else None,
         )
 
 
