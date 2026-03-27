@@ -1021,6 +1021,7 @@ def send_stats_report(report_hour: int, start_hour: int) -> None:
     # Get stats from database
     stats = get_order_stats_for_time_range(start_time, end_time)
     match_counts = get_order_item_match_counts(start_time, end_time)
+    items = get_order_items_for_time_range(start_time, end_time) if is_end_of_day else []
     
     # Build header
     header = "📊 Daily Summary" if is_end_of_day else "📊 Order Stats"

@@ -480,15 +480,16 @@ def _format_asin_line(asin: Optional[str]) -> str:
     return f'ASIN: <a href="https://amazon.com/d/{asin}">{asin}</a>'
 
 
-def _format_variant_title(part_number: Optional[str], variant_label: Optional[str]) -> str:
+def _format_variant_title(part_number: Optional[str], variant_label: Optional[str], pack_size: int = 1) -> str:
     """Format a variant title for display using part number and variant label."""
     pn = (part_number or "").strip().upper()
     vl = (variant_label or "").strip()
+    pack_suffix = f" ({pack_size}-Pack)" if pack_size > 1 else ""
     # If we have a variant label from the sheet, use part number + variant label
     if vl:
-        return f"{pn} - {vl}"[:80]  # Truncate long titles
+        return f"{pn} - {vl}{pack_suffix}"[:80]  # Truncate long titles
     # Otherwise just use part number
-    return f"Lexmark {pn}".strip()
+    return f"Lexmark {pn}{pack_suffix}".strip()
 
 
 def _primary_variant_net_cost(variant_matches: List[Dict[str, Any]]) -> Optional[float]:
@@ -788,6 +789,9 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
                 "notes": variant.get("notes"),
             })
 
+    # Sort variants: pack_size=1 first (primary), multi-packs after (alternatives)
+    variant_entries.sort(key=lambda e: (e.get("pack_size") or 1, e.get("net_cost") or 0))
+
     # Calculate profit for each variant
     import math
     variant_summaries: List[Dict[str, Any]] = []
@@ -800,55 +804,61 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
         if isinstance(amazon_price, float) and math.isnan(amazon_price):
             amazon_price = None
         # Apply overhead deduction to get effective net
+        pack_size = entry.get("pack_size") or 1
         if isinstance(net_cost, (int, float)) and net_cost > 0:
             effective_net = calculate_effective_net(net_cost, amazon_price, overhead_pct)
             # Guard against NaN result (e.g. from NaN amazon_price)
             if isinstance(effective_net, float) and math.isnan(effective_net):
                 effective_net = net_cost  # fallback to raw net
             
+            # For multi-packs, compute per-unit net
+            per_unit_eff_net = effective_net / pack_size
+            
             if is_set:
                 # For sets: profit is calculated after summing all nets (deferred below)
                 profit = None  # Will be computed after all variants are processed
             elif lot_qty > 1:
-                # For lots (same part × N): net applies to each unit, profit = net*qty - total
-                profit = (effective_net * lot_qty) - total_sale
+                # For lots (same part × N): per-unit net applies to each unit, profit = per_unit_net*qty - total
+                profit = (per_unit_eff_net * lot_qty) - total_sale
             else:
-                profit = effective_net - per_unit_price
+                profit = per_unit_eff_net - per_unit_price
         else:
             effective_net = None
+            per_unit_eff_net = None
             profit = None
         
         if is_set:
             margin = None  # Deferred
         else:
             margin = (
-                (profit / (effective_net * lot_qty if lot_qty > 1 else effective_net) * 100)
-                if profit is not None and effective_net not in (None, 0)
+                (profit / (per_unit_eff_net * lot_qty if lot_qty > 1 else per_unit_eff_net) * 100)
+                if profit is not None and per_unit_eff_net not in (None, 0)
                 else None
             )
         entry["profit"] = profit
         entry["effective_net"] = effective_net
+        entry["per_unit_eff_net"] = per_unit_eff_net
         entry["margin_pct"] = margin
         variant_summaries.append({
             "part_number": entry["part_number"],
-            "net": effective_net,
+            "net": per_unit_eff_net,  # Store per-unit net for display/DB
             "raw_net": net_cost,
             "profit": profit,
             "margin_pct": margin,
             "sellable": entry["sellable"],
             "asin": entry["asin"],
             "color": entry["color"],
-            "title": _format_variant_title(entry.get("part_number"), entry.get("variant_label")),
+            "title": _format_variant_title(entry.get("part_number"), entry.get("variant_label"), pack_size),
             "bsr": entry.get("bsr"),
             "capacity": entry.get("capacity"),
             "pack_size": entry.get("pack_size"),
             "is_alternative": False,
         })
 
-    # For set listings: compute combined profit (sum of all nets - total_sale)
+    # For set listings: compute combined profit (sum of per-unit nets - total_sale)
     if is_set and variant_entries:
         combined_net = sum(
-            e.get("effective_net") or 0.0 for e in variant_entries
+            e.get("per_unit_eff_net") or 0.0 for e in variant_entries
         )
         combined_profit = combined_net - total_sale if combined_net > 0 else None
         combined_margin = (combined_profit / combined_net * 100) if combined_profit is not None and combined_net > 0 else None
@@ -865,17 +875,21 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
 
     # ─── Helper to format a single match block ───
     def _format_match_block(entry: Dict[str, Any], show_profit: bool = True) -> str:
-        eff_net = entry.get("effective_net")
+        pack_size = entry.get("pack_size") or 1
+        # Use per-unit effective net for display
+        eff_net = entry.get("per_unit_eff_net") or entry.get("effective_net")
         prof = entry.get("profit")
         mar = entry.get("margin_pct") or 0.0
         p_emoji = _profit_marker(prof, entry["sellable"])
         sell_str = "🟩 Yes" if entry["sellable"] else "⛔ No"
         net_disp = _format_currency(eff_net)
+        if pack_size > 1:
+            net_disp += f" (per unit from {pack_size}-Pack)"
         if prof is None:
             prof_disp = "N/A"
         else:
             prof_disp = f"${prof:.2f} ({mar:.1f}%)"
-        t_line = _format_variant_title(entry.get("part_number"), entry.get("variant_label"))
+        t_line = _format_variant_title(entry.get("part_number"), entry.get("variant_label"), pack_size)
         b_emoji, b_disp = _bsr_marker(entry.get("bsr"))
         blk = (
             f"Title: {t_line}\n"
