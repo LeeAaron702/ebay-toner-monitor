@@ -873,10 +873,11 @@ def build_lot_breakdown(title: str, sheet_df: pd.DataFrame) -> LotBreakdown:
         # Check if lot_mult is divisible by number of colors (e.g. Lot of 8, 4 colors -> 2 each)
         if lot_mult % len(color_qtys) == 0:
             per_color = lot_mult // len(color_qtys)
+            original_lot_mult = lot_mult
             for c in color_qtys:
                 color_qtys[c] = per_color
             lot_mult = 1
-            confidence_notes.append(f"Distributed lot of {lot_mult * len(color_qtys) * per_color} evenly across {len(color_qtys)} colors")
+            confidence_notes.append(f"Distributed lot of {original_lot_mult} evenly across {len(color_qtys)} colors ({per_color} each)")
             # This is a reasonable assumption for "Lot of 8 KCYM"
         else:
             # Examples: "(9) Canon GPR-51 CMYK", "5 X CANON GPR-55 CMY", "Qty 16 GPR-31 Set"
@@ -921,7 +922,6 @@ def build_lot_breakdown(title: str, sheet_df: pd.DataFrame) -> LotBreakdown:
         overall_confidence = "low"
     elif overall_confidence == "high" and (mult_confidence == "medium" or color_confidence == "medium"):
         overall_confidence = "medium"
-        overall_confidence = "high"
     
     # Add notes for uncertainty
     if not model:
@@ -1757,7 +1757,10 @@ def canon(token: str, lookup_df: pd.DataFrame, limit: int = 200) -> None:
         matches_to_insert = []
         
         # ─── CASE 1: Standard single match found ────────────────────────────
-        if match and not is_mixed:
+        # Always prefer a catalog match over mixed-lot analysis. match_listing()
+        # correctly resolves multi-packs (2-Pack, 3-Pack, 4-Pack) to their actual
+        # pack ASINs, so we must not bypass it when is_mixed triggers on pack keywords.
+        if match:
             raw_net      = match["net"] or 0.0
             amazon_price = match.get("amazon_price")
             overhead_pct = get_overhead_pct()

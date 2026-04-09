@@ -22,6 +22,9 @@ from db.products_db import (
     get_lexmark_products,
 )
 from utils.analyzer_job import run_analyzer_job
+from utils.ebay_messages import poll_new_messages, format_message_for_telegram
+from utils.telegram_service import send_telegram_message_with_keyboard
+from db.listings_db import save_ebay_message_telegram_id
 
 load_dotenv()
 
@@ -31,6 +34,7 @@ CLIENT_SECRET          = os.getenv("EBAY_CLIENT_SECRET")
 TOKEN_URL              = "https://api.ebay.com/identity/v1/oauth2/token"
 
 ORDER_HISTORY_INTERVAL = 3600  # 1 hour between order history fetches
+MESSAGE_POLL_INTERVAL  = 3600  # 1 hour between eBay message polls
 ANALYZER_HOUR = 7  # Run analyzer job at 7am PST daily
 
 def get_token() -> str:
@@ -163,6 +167,38 @@ def _run_analyzer_job(startup: bool = False) -> dict:
         return {'success': False, 'errors': ['Exception during analyzer job']}
 
 
+def _run_message_poll_job() -> None:
+    """Poll eBay inbox for new messages and send Telegram notifications."""
+    try:
+        new_messages = poll_new_messages()
+        ts = datetime.now(LOCAL_TZ).strftime("%b %d %Y, %I:%M %p %Z")
+
+        if not new_messages:
+            print(f"LOG - Main.py - eBay messages: no new messages at {ts}")
+            return
+
+        print(f"LOG - Main.py - eBay messages: {len(new_messages)} new message(s) at {ts}")
+
+        for msg in new_messages:
+            text = format_message_for_telegram(msg)
+            row_id = msg.get("db_row_id")
+
+            # Build inline keyboard with Reply button
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "Reply", "callback_data": f"ebay_reply:{row_id}"}]
+                ]
+            }
+
+            tg_msg_id = send_telegram_message_with_keyboard(text, reply_markup)
+            if tg_msg_id and row_id:
+                save_ebay_message_telegram_id(row_id, tg_msg_id)
+
+    except Exception:
+        print("Unexpected error in message_poll:")
+        traceback.print_exc()
+
+
 def _get_next_report_times() -> dict:
     """
     Calculate the next scheduled report times for all reports.
@@ -255,6 +291,7 @@ def monitor():
     print("[Monitor] ✓ eBay API token acquired")
     
     next_order_history = time.time()  # Run immediately on startup, then hourly
+    next_message_poll  = time.time()  # Run immediately on startup, then hourly
     next_reports = _get_next_report_times()  # Schedule for 9am, 12pm, 5pm PST
     next_analyzer = _get_next_analyzer_time()  # Schedule for 7am PST daily
     
@@ -305,6 +342,13 @@ def monitor():
             order_history_thread.start()
             threads.append(order_history_thread)
             next_order_history = time.time() + ORDER_HISTORY_INTERVAL
+
+        # Poll eBay inbox for new messages (hourly)
+        if now >= next_message_poll:
+            msg_poll_thread = threading.Thread(target=_run_message_poll_job)
+            msg_poll_thread.start()
+            threads.append(msg_poll_thread)
+            next_message_poll = time.time() + MESSAGE_POLL_INTERVAL
 
         # Check each scheduled stats report
         for report_hour, (scheduled_ts, start_hour) in list(next_reports.items()):

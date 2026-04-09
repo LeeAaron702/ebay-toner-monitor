@@ -21,12 +21,13 @@ from __future__ import annotations
 import os
 import time
 import logging
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import requests
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -70,20 +71,127 @@ async def log_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception:
         logger.exception("log_all_updates error")
 
+# ─────────────────────── eBay message reply handlers ────────────────────────
+
+async def handle_reply_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the 'Reply' inline keyboard button on eBay message notifications."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    # Callback data format: "ebay_reply:{db_row_id}"
+    if not query.data.startswith("ebay_reply:"):
+        return
+
+    await query.answer()
+
+    try:
+        row_id = int(query.data.split(":")[1])
+    except (IndexError, ValueError):
+        await query.message.reply_text("Error: invalid message reference.")
+        return
+
+    from db.listings_db import get_ebay_message_by_row_id
+    msg = get_ebay_message_by_row_id(row_id)
+    if not msg:
+        await query.message.reply_text("Error: message not found in database.")
+        return
+
+    # Store pending reply state
+    context.user_data["pending_ebay_reply"] = {
+        "row_id": row_id,
+        "sender": msg.get("sender") or msg.get("sender_id", "Unknown"),
+        "sender_id": msg.get("sender_id", ""),
+        "item_id": msg.get("item_id", ""),
+        "ebay_message_id": msg.get("ebay_message_id", ""),
+        "subject": msg.get("subject", ""),
+    }
+
+    sender = msg.get("sender") or msg.get("sender_id", "Unknown")
+    cancel_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Cancel", callback_data="ebay_reply_cancel")]
+    ])
+    await query.message.reply_text(
+        f"Type your reply to <b>{sender}</b>:\n"
+        f"(Re: {msg.get('subject', 'no subject')})",
+        parse_mode="HTML",
+        reply_markup=cancel_kb,
+    )
+
+
+async def handle_cancel_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Cancel a pending eBay reply."""
+    query = update.callback_query
+    if not query or query.data != "ebay_reply_cancel":
+        return
+
+    await query.answer()
+    context.user_data.pop("pending_ebay_reply", None)
+    await query.message.reply_text("Reply cancelled.")
+
+
+async def handle_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Capture typed text as an eBay reply when a reply is pending."""
+    pending = context.user_data.get("pending_ebay_reply")
+    if not pending:
+        return  # No pending reply — fall through to log_all_updates
+
+    reply_body = update.message.text
+    if not reply_body:
+        return
+
+    # Clear pending state immediately
+    context.user_data.pop("pending_ebay_reply", None)
+
+    item_id = pending["item_id"]
+    recipient_id = pending["sender_id"]
+    parent_msg_id = pending["ebay_message_id"]
+    row_id = pending["row_id"]
+
+    if not item_id or not recipient_id:
+        await update.message.reply_text(
+            "Cannot reply — missing item ID or sender ID from the original message."
+        )
+        return
+
+    await update.message.reply_text("Sending reply to eBay...")
+
+    from utils.ebay_messages import send_reply
+    success = send_reply(item_id, recipient_id, reply_body, parent_msg_id)
+
+    if success:
+        from db.listings_db import mark_ebay_message_replied
+        mark_ebay_message_replied(row_id, reply_body)
+        await update.message.reply_text(
+            f"Reply sent to <b>{pending['sender']}</b>.",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            "Failed to send reply via eBay. Check logs for details."
+        )
+
+
 # ─────────────────────── Registration ────────────────────────────────────────
 
 def register_handlers(app: Application) -> None:
     """
-    Register minimal command handlers on the given PTB Application.
-    
+    Register command handlers and eBay message reply handlers.
+
     Note: Exclusion management commands have been removed.
     Use the admin panel at /admin/exclusions instead.
     """
-    # Basic status commands only
+    # Basic status commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ping", ping))
 
-    # Log all updates for debugging
+    # eBay message reply flow
+    app.add_handler(CallbackQueryHandler(handle_reply_button, pattern=r"^ebay_reply:\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_cancel_reply, pattern=r"^ebay_reply_cancel$"))
+    # Text handler for reply capture — must come before the catch-all
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_text))
+
+    # Log all updates for debugging (catch-all, must be last)
     app.add_handler(MessageHandler(filters.ALL, log_all_updates))
 
 # ─────────────────────── Plain HTTP helpers (sync) ───────────────────────────
@@ -279,3 +387,28 @@ def send_telegram_message(text: str) -> None:
         
         if remaining:
             time.sleep(max(0.0, TELEGRAM_SEND_MIN_INTERVAL_SEC / 2))
+
+
+def send_telegram_message_with_keyboard(text: str, reply_markup: dict) -> Optional[int]:
+    """
+    Send a message with an inline keyboard to the configured chat.
+    Returns the Telegram message_id on success, or None on failure.
+    """
+    try:
+        _require_env(require_chat=True)
+    except RuntimeError as e:
+        logger.error(str(e))
+        return None
+
+    payload = {
+        "chat_id": _get_chat_id(),
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": reply_markup,
+    }
+    try:
+        data = _post_with_retries("sendMessage", payload)
+        return data.get("result", {}).get("message_id")
+    except Exception as ex:
+        logger.exception("Failed to send Telegram message with keyboard: %s", ex)
+        return None

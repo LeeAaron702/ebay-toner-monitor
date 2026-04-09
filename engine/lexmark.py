@@ -746,8 +746,9 @@ def build_listing_message(record: Dict[str, Any]) -> Tuple[str, List[Dict[str, A
     is_set, num_matched = _detect_set_listing(title, matches)
     
     # For set listings, the "pack" count refers to the number of different items,
-    # not multiples of the same item. Reset lot_qty if set is detected.
-    if is_set and lot_qty == num_matched:
+    # not multiples of the same item. Always reset lot_qty when a set is detected —
+    # we never know the per-part distribution in a mixed bundle.
+    if is_set:
         lot_qty = 1
     
     per_unit_price = total_sale / lot_qty if lot_qty > 1 else total_sale

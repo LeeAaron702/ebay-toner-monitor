@@ -112,6 +112,66 @@ def _clean_field(val: str) -> str:
     return str(val or "").strip()
 
 
+def _extract_lot_quantity(title: str) -> int:
+    """
+    Extract lot/multi-quantity from listing title.
+
+    Detects patterns like:
+    - "Lot of 3", "Lot of 4"
+    - "3 Boxes", "2 Pack"
+    - "x3", "x4"
+    - "(3)" at start
+    - Number words: "TWO", "THREE", etc.
+
+    Returns the detected quantity (1 if none detected).
+    """
+    if not title:
+        return 1
+
+    title_upper = title.upper().strip()
+
+    NUMBER_WORDS = {
+        "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5,
+        "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10,
+    }
+
+    NAMED_PACKS = {
+        "DOUBLE": 2, "DUAL": 2, "TWIN": 2,
+        "TRIPLE": 3, "QUAD": 4, "QUADRUPLE": 4,
+    }
+    for word, val in NAMED_PACKS.items():
+        if re.search(rf'\b{word}\s+PACK\b', title_upper):
+            return val
+
+    m = re.search(r'\bLOT\s+OF\s+(\d+)\b', title_upper)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r'\bSET\s+(?:OF\s+)?(\d+)\b', title_upper)
+    if m:
+        return int(m.group(1))
+
+    m = re.match(r'^\((\d+)\)', title_upper)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r'\b(\d+)\s*[-]?\s*(?:BOXES|BOX|PACKS?)\b', title_upper)
+    if m:
+        return int(m.group(1))
+
+    m = re.search(r'(?<![A-Z/])X(\d{1,2})\b', title_upper)
+    if m:
+        val = int(m.group(1))
+        if 2 <= val <= 20:
+            return val
+
+    for word, val in NUMBER_WORDS.items():
+        if re.match(rf'^{word}\b', title_upper):
+            return val
+
+    return 1
+
+
 
 
 
@@ -540,6 +600,7 @@ def build_listing_message(
     quantity = details.get("quantity") or "N/A"
 
     title = listing.get('title', '<missing title>')
+    lot_qty = _extract_lot_quantity(title)
     msg = (
         f'<a href="{url}">{title}</a>\n\n'
         f"Seller: {username} ({fb_score}, {fb_pct}%)\n"
@@ -592,12 +653,12 @@ def build_listing_message(
             effective_net = calculate_effective_net(net_cost, amazon_price, overhead_pct)
             if isinstance(effective_net, float) and math.isnan(effective_net):
                 effective_net = net_cost
-            profit = effective_net - total_sale
+            profit = (effective_net * lot_qty) - total_sale
         else:
             effective_net = None
             profit = None
         margin = (
-            (profit / effective_net * 100)
+            (profit / (effective_net * lot_qty) * 100)
             if profit is not None and effective_net not in (None, 0)
             else None
         )
@@ -640,13 +701,15 @@ def build_listing_message(
         title_line = _format_variant_title(
             primary.get("part_number"), primary.get("variant_label")
         )
+        match_header = f"Match ({lot_qty}x):\n" if lot_qty > 1 else "Match:\n"
+        net_line = f"Net: {net_display} (per unit)" if lot_qty > 1 else f"Net: {net_display}"
         msg += (
-            "Match:\n"
-            f"Title: {title_line}\n"
-            f"{_format_asin_line(primary.get('asin'))}\n"
-            f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
-            f"Net: {net_display}\n"
-            f"Profit: {profit_emoji} {profit_display}\n"
+            match_header
+            + f"Title: {title_line}\n"
+            + f"{_format_asin_line(primary.get('asin'))}\n"
+            + f"BSR: {bsr_display} | Sellable: {sellable_str}\n"
+            + f"{net_line}\n"
+            + f"Profit: {profit_emoji} {profit_display}\n"
         )
         
         # Add notes if present (e.g., "DO NOT BUY", "known bad match")

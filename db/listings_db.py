@@ -12,6 +12,7 @@ MESSAGES_TABLE = 'messages'
 MATCHES_TABLE = 'matches'
 ORDER_HISTORY_TABLE = 'order_history'
 PURCHASED_UNITS_TABLE = 'purchased_units'
+EBAY_MESSAGES_TABLE = 'ebay_messages'
 ROLLING_WINDOW_SEC = 72 * 3600  # 72 hours
 
 def migrate_db():
@@ -204,14 +205,42 @@ def init_db():
 		
 		# Create index for common queries
 		conn.execute(f'''
-			CREATE INDEX IF NOT EXISTS idx_purchased_units_model_color 
+			CREATE INDEX IF NOT EXISTS idx_purchased_units_model_color
 			ON {PURCHASED_UNITS_TABLE} (model, color)
 		''')
 		conn.execute(f'''
-			CREATE INDEX IF NOT EXISTS idx_purchased_units_date 
+			CREATE INDEX IF NOT EXISTS idx_purchased_units_date
 			ON {PURCHASED_UNITS_TABLE} (purchased_date)
 		''')
-				
+
+		# ebay_messages table — tracks eBay inbox messages for Telegram notifications
+		conn.execute(f'''
+			CREATE TABLE IF NOT EXISTS {EBAY_MESSAGES_TABLE} (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				account_id TEXT NOT NULL,
+				ebay_message_id TEXT NOT NULL,
+				external_message_id TEXT,
+				sender TEXT,
+				sender_id TEXT,
+				subject TEXT,
+				body TEXT,
+				item_id TEXT,
+				item_title TEXT,
+				creation_date TEXT,
+				is_replied INTEGER DEFAULT 0,
+				reply_text TEXT,
+				reply_sent_at TEXT,
+				telegram_message_id INTEGER,
+				first_seen_at TEXT DEFAULT (datetime('now')),
+				UNIQUE(account_id, ebay_message_id)
+			)
+		''')
+		# Migration: add item_title column if table already exists without it
+		try:
+			conn.execute(f'ALTER TABLE {EBAY_MESSAGES_TABLE} ADD COLUMN item_title TEXT')
+		except sqlite3.OperationalError:
+			pass
+
 	conn.close()
 
 def add_seen_id(listing_id: str, timestamp: Optional[int] = None):
@@ -1116,9 +1145,9 @@ def get_lot_type_comparison() -> List[Dict[str, Any]]:
 	conn = get_db_connection()
 	conn.row_factory = sqlite3.Row
 	cur = conn.cursor()
-	
+
 	cur.execute(f'''
-		SELECT 
+		SELECT
 			lot_type,
 			COUNT(DISTINCT order_id || '-' || transaction_id) as transaction_count,
 			SUM(quantity) as total_units,
@@ -1128,7 +1157,84 @@ def get_lot_type_comparison() -> List[Dict[str, Any]]:
 		FROM {PURCHASED_UNITS_TABLE}
 		GROUP BY lot_type
 	''')
-	
+
 	rows = cur.fetchall()
 	conn.close()
 	return [dict(row) for row in rows]
+
+
+# ============================================================================
+# EBAY MESSAGES TABLE FUNCTIONS
+# ============================================================================
+
+def insert_ebay_message(
+	account_id: str,
+	ebay_message_id: str,
+	external_message_id: str,
+	sender: str,
+	sender_id: str,
+	subject: str,
+	body: str,
+	item_id: str,
+	item_title: str,
+	creation_date: str,
+) -> int:
+	"""Insert a new eBay message. Returns the row id."""
+	conn = get_db_connection()
+	with conn:
+		cur = conn.execute(f'''
+			INSERT OR IGNORE INTO {EBAY_MESSAGES_TABLE}
+			(account_id, ebay_message_id, external_message_id, sender, sender_id,
+			 subject, body, item_id, item_title, creation_date)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		''', (account_id, ebay_message_id, external_message_id, sender, sender_id,
+			  subject, body, item_id, item_title, creation_date))
+		row_id = cur.lastrowid
+	conn.close()
+	return row_id
+
+
+def get_ebay_message_by_ebay_id(ebay_message_id: str) -> Optional[Dict[str, Any]]:
+	"""Look up a message by its eBay message ID."""
+	conn = get_db_connection()
+	conn.row_factory = sqlite3.Row
+	cur = conn.cursor()
+	cur.execute(f'SELECT * FROM {EBAY_MESSAGES_TABLE} WHERE ebay_message_id = ?', (ebay_message_id,))
+	row = cur.fetchone()
+	conn.close()
+	return dict(row) if row else None
+
+
+def get_ebay_message_by_row_id(row_id: int) -> Optional[Dict[str, Any]]:
+	"""Look up a message by its database row ID."""
+	conn = get_db_connection()
+	conn.row_factory = sqlite3.Row
+	cur = conn.cursor()
+	cur.execute(f'SELECT * FROM {EBAY_MESSAGES_TABLE} WHERE id = ?', (row_id,))
+	row = cur.fetchone()
+	conn.close()
+	return dict(row) if row else None
+
+
+def mark_ebay_message_replied(row_id: int, reply_text: str) -> None:
+	"""Mark a message as replied with the reply text."""
+	conn = get_db_connection()
+	with conn:
+		conn.execute(f'''
+			UPDATE {EBAY_MESSAGES_TABLE}
+			SET is_replied = 1, reply_text = ?, reply_sent_at = datetime('now')
+			WHERE id = ?
+		''', (reply_text, row_id))
+	conn.close()
+
+
+def save_ebay_message_telegram_id(row_id: int, telegram_message_id: int) -> None:
+	"""Store the Telegram message ID for reply correlation."""
+	conn = get_db_connection()
+	with conn:
+		conn.execute(f'''
+			UPDATE {EBAY_MESSAGES_TABLE}
+			SET telegram_message_id = ?
+			WHERE id = ?
+		''', (telegram_message_id, row_id))
+	conn.close()
